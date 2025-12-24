@@ -1,0 +1,33 @@
+12/15/2025|05:56:35|PUT|Successfully transferred file(s).
+   AFTC_CONFIGFILE=E:\Data\AFTScript\CSVCDAS\aft_rdm_new.cfg
+   wsnaddr(env cfg )=//eagnmnmep030:61000
+   wsnaddr(override)=N/A
+   wsnaddr(targeted)=//eagnmnmep030:61000
+   ulogpfx=E:\Data\AFTScript\CSVCDAS\AFT_RDM_ERROR_log
+   historylog=E:\Data\AFTScript\CSVCDAS\aft_rdm_history_log
+   configfile=E:\Data\AFTScript\CSVCDAS\aft_rdm_new.cfg
+   src[1]=EAGNMNWBP1665:E:\Data\RDM_OUT\CSV_EARNEDACTUALHRS_20251215_055632.DAT
+   dst[1]=eagnmnmep094:/cdashome/rdm_csv/data/stage/CSV_EARNEDACTUALHRS_20251215_055632.DAT
+   msg[1]=AFT/CSVCDAS: (cltsys=EAGNMNWBP1665  vrc=0) The file transferred successfully. (26977504 bytes)
+12/17/2025|15:31:19|PUT|Successfully transferred file(s).
+   AFTC_CONFIGFILE=E:\Data\AFTScript\CSVCDAS\aft_rdm_new.cfg
+   wsnaddr(env cfg )=//eagnmnmep030:61000
+   wsnaddr(override)=N/A
+   wsnaddr(targeted)=//eagnmnmep030:61000
+   ulogpfx=E:\Data\AFTScript\CSVCDAS\AFT_RDM_ERROR_log
+   historylog=E:\Data\AFTScript\CSVCDAS\aft_rdm_history_log
+   configfile=E:\Data\AFTScript\CSVCDAS\aft_rdm_new.cfg
+   src[1]=EAGNMNWBP1665:E:\Data\RDM_OUT\CSV_EARNEDACTUALHRS_20251217_153116.DAT
+   dst[1]=eagnmnmep094:/cdashome/rdm_csv/data/stage/CSV_EARNEDACTUALHRS_20251217_153116.DAT
+   msg[1]=AFT/CSVCDAS: (cltsys=EAGNMNWBP1665  vrc=0) The file transferred successfully. (26978823 bytes)
+12/22/2025|06:00:01|PUT|Successfully transferred file(s).
+   AFTC_CONFIGFILE=E:\Data\AFTScript\CSVCDAS\aft_rdm_new.cfg
+   wsnaddr(env cfg )=//eagnmnmep030:61000
+   wsnaddr(override)=N/A
+   wsnaddr(targeted)=//eagnmnmep030:61000
+   ulogpfx=E:\Data\AFTScript\CSVCDAS\AFT_RDM_ERROR_log
+   historylog=E:\Data\AFTScript\CSVCDAS\aft_rdm_history_log
+   configfile=E:\Data\AFTScript\CSVCDAS\aft_rdm_new.cfg
+   src[1]=EAGNMNWBP1665:E:\Data\RDM_OUT\CSV_EARNEDACTUALHRS_20251222_055956.DAT
+   dst[1]=eagnmnmep094:/cdashome/rdm_csv/data/stage/CSV_EARNEDACTUALHRS_20251222_055956.DAT
+   msg[1]=AFT/CSVCDAS: (cltsys=EAGNMNWBP1665  vrc=0) The file transferred successfully. (29472424 bytes)

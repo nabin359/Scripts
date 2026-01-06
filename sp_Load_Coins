@@ -1,0 +1,182 @@
+USE [PCDV_DW]
+GO
+/****** Object:  StoredProcedure [dbo].[Load_Coins]    Script Date: 1/5/2026 10:11:33 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER Procedure [dbo].[Load_Coins]
+as
+ declare @p_error as varchar(250)
+ --step 1: import data into PCDV_DW.dbo.hold_coins from PCDV_DW.dbo.import_coins
+	INSERT INTO PCDV_DW.dbo.hold_coins (coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_80, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 80
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_90, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag 
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 90
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_110, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 110
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_120, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 120
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_134, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 134
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_166, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag 
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 166
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_190, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag 
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 190
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_310, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag 
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 310 
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_320, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a =320
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_334, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 334
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_380, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag 
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 380
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_410, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 410
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_420, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 420
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_434, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 434
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_580, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 580
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_589, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 589
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_610, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a  = 610
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_620, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a  = 620
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_634, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a  = 634
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_700, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a  = 700
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_701, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a  = 701
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_710, coins_cag)
+	SELECT office, finance,cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 710
+	INSERT  INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_730, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 730
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_740, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 740
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_750, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 750
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_760, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 760
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_770, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 770
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_780, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a =780
+	INSERT INTO PCDV_DW.dbo.hold_coins(coins_fac_name, coins_fin_nbr_station, coins_district_code, coins_lnc_790, coins_cag)
+	SELECT office, finance, cluster, emp_count, cag
+	FROM PCDV_DW.dbo.import_coins WHERE d_a = 790
+	set @p_error = @@error 
+	if (@p_error <> 0)
+	begin 
+	   insert into dbo.error_log(error_message, step_number, date_time, system_name)
+	   values(@p_error, '1', getdate(), 'COINS')
+	   exec dbo.SendEmail @Error = @p_error, @System = 'COINS', @Step = '1'
+        end 
+	set @p_error = 0
+ --step 2: Add '0'infront of coins_fin_nbr_station where coins_fin_nbr_station's first digit is missing
+	update PCDV_DW.dbo.hold_coins
+	set coins_fin_nbr_station = '0'+coins_fin_nbr_station
+	where len(coins_fin_nbr_station)<6
+	set @p_error = @@error 
+	if (@p_error <> 0)
+	begin 
+	    insert into error_log(error_message, step_number, date_time, system_name)
+	    values(@p_error, '2', getdate(), 'COINS')
+	    exec dbo.SendEmail @Error = @p_error, @System = 'COINS', @Step = '2'
+	end 
+	set @p_error = 0
+ --step 3: Hold clean up
+	SELECT	coins_fac_name, coins_cag, coins_fy, coins_wk, coins_district_code, coins_fin_nbr_station, 
+	SUM(coins_lnc_80) coins_lnc_80, SUM(coins_lnc_90) coins_lnc_90, SUM(coins_lnc_110) coins_lnc_110, 
+	SUM(coins_lnc_120) coins_lnc_120, SUM(coins_lnc_134) coins_lnc_134, SUM(coins_lnc_166) coins_lnc_166,
+	SUM(coins_lnc_190) coins_lnc_190, SUM(coins_lnc_310) coins_lnc_310, SUM(coins_lnc_320) coins_lnc_320,
+	SUM(coins_lnc_334) coins_lnc_334, SUM(coins_lnc_380) coins_lnc_380, SUM(coins_lnc_410) coins_lnc_410, 
+	SUM(coins_lnc_420) coins_lnc_420, SUM(coins_lnc_434) coins_lnc_434, SUM(coins_lnc_580) coins_lnc_580, 
+	SUM(coins_lnc_589) coins_lnc_589, SUM(coins_lnc_610) coins_lnc_610, SUM(coins_lnc_620) coins_lnc_620,
+	SUM(coins_lnc_634) coins_lnc_634, SUM(coins_lnc_700) coins_lnc_700, SUM(coins_lnc_701) coins_lnc_701,
+	SUM(coins_lnc_710) coins_lnc_710, SUM(coins_lnc_730) coins_lnc_730, SUM(coins_lnc_740) coins_lnc_740, 
+	SUM(coins_lnc_750) coins_lnc_750, SUM(coins_lnc_760) coins_lnc_760, SUM(coins_lnc_770) coins_lnc_770, 
+	SUM(coins_lnc_780) coins_lnc_780, SUM(coins_lnc_790) coins_lnc_790,'0'c110,'0'c130,'0'c410,'0'ctot
+	INTO #hold FROM PCDV_DW.dbo.hold_coins
+	GROUP BY coins_fac_name, coins_cag, coins_fy, coins_wk, coins_district_code, coins_fin_nbr_station
+	set @p_error = @@error 
+	if (@p_error <> 0)
+	begin 
+	    insert into error_log(error_message, step_number, date_time, system_name)
+	    values(@p_error, '3', getdate(), 'COINS')
+	    exec dbo.SendEmail @Error = @p_error, @System = 'COINS', @Step = '3'
+	end 
+	set @p_error = 0
+--step 4:  Populate Master_Coins from PCDV_DW.dbo.hold_coins
+	 insert into PCDV_DW.dbo.Master_Coins
+	 (coins_fac_name, coins_cag, coins_fy, coins_wk, coins_district_code, coins_fin_nbr_station, coins_lnc_80, coins_lnc_90,
+	  coins_lnc_110, coins_lnc_120, coins_lnc_134, coins_lnc_166, coins_lnc_190, coins_lnc_310, coins_lnc_320, coins_lnc_334,
+	  coins_lnc_380, coins_lnc_410, coins_lnc_420, coins_lnc_434, coins_lnc_580, coins_lnc_589, coins_lnc_610, coins_lnc_620,
+	  coins_lnc_634, coins_lnc_700, coins_lnc_701, coins_lnc_710, coins_lnc_730, coins_lnc_740, coins_lnc_750, coins_lnc_760,
+	  coins_lnc_770, coins_lnc_780, coins_lnc_790, coins_49_110, coins_49_310, coins_49_410, coins_49_tot)
+	 select coins_fac_name, coins_cag, coins_fy, coins_wk, coins_district_code, coins_fin_nbr_station, coins_lnc_80, coins_lnc_90,
+	  coins_lnc_110, coins_lnc_120, coins_lnc_134, coins_lnc_166, coins_lnc_190, coins_lnc_310, coins_lnc_320, coins_lnc_334,
+	  coins_lnc_380, coins_lnc_410, coins_lnc_420, coins_lnc_434, coins_lnc_580, coins_lnc_589, coins_lnc_610, coins_lnc_620,
+	  coins_lnc_634, coins_lnc_700, coins_lnc_701, coins_lnc_710, coins_lnc_730, coins_lnc_740, coins_lnc_750, coins_lnc_760,
+	  coins_lnc_770, coins_lnc_780, coins_lnc_790, coins_49_110, coins_49_310, coins_49_410, coins_49_tot 
+	 from PCDV_DW.dbo.Hold_Coins
+	 set @p_error = @@error 
+	 if (@p_error <> 0)
+	 begin 
+	    insert into error_log(error_message, step_number, date_time, system_name)
+	    values(@p_error, '4', getdate(), 'COINS')
+	    exec dbo.SendEmail @Error = @p_error, @System = 'COINS', @Step = '4'
+	 end 
+	 set @p_error = 0
+--Step 5: Purge Import Hold
+	 truncate table PCDV_DW.dbo.import_coins
+	 truncate table PCDV_DW.dbo.hold_coins
+         set @p_error = @@error 
+	 if (@p_error <> 0)
+	 begin 
+	    insert into error_log(error_message, step_number, date_time, system_name)
+	    values(@p_error, '5', getdate(), 'COINS')
+	    exec dbo.SendEmail @Error = @p_error, @System = 'COINS', @Step = '5'
+	 end 
+	 set @p_error = 0
+
+--Step 6: update var_base from 392
+
+insert into pcdv_dw.dbo.var_base
+(b_area,b_area_name,b_cluster,b_cluster_name,b_mpoo,b_lead_fin_nbr,b_lead_name,b_fin_nbr,b_fin_name,
+b_cag,b_date,b_level,b_zip,b_prod_dps_pct,b_pct_standard,b_prod_fss_pct)
+select b_area,b_area_name,b_cluster,b_cluster_name,b_mpoo,b_lead_fin_nbr,b_lead_name,b_fin_nbr,b_fin_name,
+b_cag,getdate(),b_level,b_zip,.90,.90,.85
+from [eagnmnsg392].pcsv_dw.dbo.var_base where b_fin_nbr not in
+(select b_fin_nbr from pcdv_dw.dbo.var_base with(nolock))

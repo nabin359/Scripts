@@ -1,0 +1,453 @@
+USE [PCDV_DW]
+GO
+/****** Object:  StoredProcedure [dbo].[sp_LoadVarWeekly]    Script Date: 1/5/2026 10:33:04 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-- =============================================
+-- Author:		unknown
+-- Create date: unknown
+-- Description:	Update CDV weekly data
+-- History
+--  2019-01-24; wildgk.  Abstract F4 server name for update of var_base FSS flags and LDC 23 Sun/Hol scans data.
+--  2023-02-09; KBZKG0.  Add Execute of pr_volume_factors_update at the bottom of procedure.
+-- =============================================
+
+ALTER      Procedure [dbo].[sp_LoadVarWeekly]
+as
+	declare @p_error as varchar(250)		
+	declare @workingdate_fiscal_year as char(4);	
+	declare @workingdate_previous_fiscal_year as char(4);
+	begin
+
+		--		Get SPLY Weeks
+		DECLARE @ann_nbr_weeks_sply smallint;
+		DECLARE @ann_nbr_weeks_double_sply smallint; --CBA added 20181023 to support accurate eFlash combinations
+		DECLARE @ann_nbr_weeks smallint; --CBA added 20181023 to support accurate eFlash combinations
+		SELECT TOP 1	@ann_nbr_weeks_sply = ann_nbr_weeks_sply
+			, @ann_nbr_weeks_double_sply = ann_nbr_weeks_double_sply --CBA added 20181023 to support accurate eFlash combinations
+			, @ann_nbr_weeks = ann_nbr_weeks --CBA added 20181023 to support accurate eFlash combinations
+		FROM pcdv_dw.dbo.var_annual ORDER BY ann_id desc	
+
+		set @workingdate_fiscal_year = (select top 1 fy_long from workingdate with(nolock));
+		set @workingdate_previous_fiscal_year = @workingdate_fiscal_year - 1;
+
+		print 'started '
+		print getdate();
+		-- step 1
+		UPDATE var_active SET var_var = 0
+		delete from var_weekly where w_fy = @workingdate_fiscal_year
+		
+		print 'Finished delete '
+		print getdate();
+		
+		insert into var_weekly (w_fy,w_wk,w_fin_nbr)
+		select @workingdate_fiscal_year, fsh_wk, b_fin_nbr 
+		from var_base
+		left outer join master_flash 
+            on  fsh_fy=@workingdate_fiscal_year 
+            and fsh_wk >0
+			and fsh_wk <= @ann_nbr_weeks --CBA/JW 20181023 do not allow week 53 into var_weekly when master_calendar won't support it
+		group by fsh_wk, b_fin_nbr
+
+		print 'finished insert '
+		print getdate();
+		
+
+		set @p_error = @@error
+		
+		if (@p_error <> 0)
+			begin 
+				insert into dbo.error_log(error_message, step_number, date_time, system_name)
+				values(@p_error, '1', getdate(), 'VAR_WEEKLY')
+				exec pcdv_delpvar.dbo.SendEmail @Error = @p_error, @System = 'VAR_WEEKLY', @Step = '1'
+			end 
+		set @p_error = 0
+		
+		-- step 3
+		UPDATE var_weekly
+		SET
+		w_sply_hrs = (fsh_ldc_21_curs + fsh_ldc_22_curs + fsh_ldc_23_curs + fsh_ldc_24_curs + fsh_ldc_26_curs 
+			+ fsh_ldc_27_curs + fsh_ldc_28_curs + fsh_ldc_29_curs + fsh_ldc_92_curs), 
+		w_hrs_ldc21 = fsh_ldc_21_cura, w_hrs_ldc21sply=fsh_ldc_21_curs,
+		w_hrs_ldc22 = fsh_ldc_22_cura, w_hrs_ldc22sply = fsh_ldc_22_curs,
+		w_hrs_ldc23 = fsh_ldc_23_cura, w_hrs_ldc23sply = fsh_ldc_23_curs,
+		w_hrs_ldc24 = fsh_ldc_24_cura, w_hrs_ldc24sply = fsh_ldc_24_curs,
+		w_hrs_ldc26 = fsh_ldc_26_cura, w_hrs_ldc26sply = fsh_ldc_26_curs,
+		w_hrs_ldc27 = fsh_ldc_27_cura, w_hrs_ldc27sply = fsh_ldc_27_curs,
+		w_hrs_ldc28 = fsh_ldc_28_cura, w_hrs_ldc28sply = fsh_ldc_28_curs, 
+		w_hrs_ldc29 = fsh_ldc_29_cura, w_hrs_ldc29sply = fsh_ldc_29_curs,
+		w_hrs_ldc92 = fsh_ldc_92_cura, w_hrs_ldc92sply = fsh_ldc_92_curs,
+		w_hrs_ldc41 = fsh_ldc_41_cura,w_hrs_ldc42 = fsh_ldc_42_cura,
+		w_hrs_ldc43 = fsh_ldc_43_cura, w_hrs_43_ald = fsh_ldc_l43a_cura, 
+		w_hrs_43_flt = fsh_ldc_l43f_cura, w_hrs_43_ltr = fsh_ldc_l43l_cura, 
+		w_hrs_43_pps = fsh_ldc_l43p_cura, w_hrs_ldc44 = fsh_ldc_44_cura, 
+		w_hrs_ldc45 = fsh_ldc_45_cura, w_hrs_ldc46 = fsh_ldc_46_cura, 
+		w_hrs_ldc48 = fsh_ldc_48_cura, w_hrs_ldc47 = fsh_ldc_47_cura, 
+		w_hrs_ldc80 = fsh_ldc_80_cura, w_vol_box_flt = fsh_boxf_cura, 
+		w_vol_box_ltr = fsh_boxl_cura, w_vol_dis_flt = fsh_udfl_cura, 
+		w_vol_dis_ltr = fsh_udlt_cura, w_vol_cas_ltr = fsh_cslt_cura, 
+		w_vol_cas_flt = fsh_csfl_cura, w_vol_dps_ltr = fsh_dps_cura, 
+		w_vol_seq_pcs = fsh_seq_cura, w_hrs_car_tot = fsh_fn2b_cura, 
+		w_hrs_car_al = fsh_al2c_cura, w_hrs_car_sl = fsh_sl2c_cura, 
+		w_hrs_car_ot = fsh_ot2b_cura, w_hrs_car_lwop = fsh_wp2c_cura, 
+		w_vol_pps = fsh_pk1k_cura, w_hrs_clk_tot = fsh_fn4_cura, 
+		w_hrs_clk_al = fsh_al4_cura, w_hrs_clk_sl = fsh_sl4_cura, 
+		w_hrs_clk_ot = fsh_ot4_cura, w_hrs_clk_lwop = fsh_wp4_cura, 
+		w_sply_dels = fsh_cupd_curs, w_cty_cupd = fsh_cupd_cura,w_fss_dps=fsh_fss_dps,w_vol_dps_flt=fsh_fss_dps,
+		-- GDW Add Cased LTR and FLT SPLY, PKCC, CPDC and SB2B
+		w_vol_cas_ltr_sply=fsh_cslt_curs,w_vol_cas_flt_sply=fsh_csfl_curs,
+		w_vol_pkcc=fsh_pkcc_cura,w_vol_pkcc_sply=fsh_pkcc_curs,
+		w_cpdc=fsh_cpdc_cura,w_cpdc_sply=fsh_cpdc_curs,
+		w_sb2b=fsh_sb2b_cura,w_sb2b_sply=fsh_sb2b_curs,
+		-- GDW Add FN2C and OT2C
+		w_hrs_fn2c_tot=fsh_fn2c_cura, w_hrs_fn2c_ot=fsh_ot2c_cura,
+		w_hrs_fn2c_tot_sply=fsh_fn2c_curs, w_hrs_fn2c_ot_sply=fsh_ot2c_curs, w_hrs_fn2c_tot_plan=fsh_fn2c_plan
+		FROM master_flash with(nolock)
+		WHERE w_fy = fsh_fy and fsh_fy=@workingdate_fiscal_year
+		AND w_wk = fsh_wk AND w_fin_nbr = fsh_fin_nbr_station
+
+ 
+		--week 53 add to week 1 if last FY has only 52 weeks (incomplete Week 53) 
+		IF (@ann_nbr_weeks_sply <> 53) BEGIN --CBA 20181023 add logic to handle week 53 over 2 years
+			UPDATE var_weekly
+			SET 
+			
+			w_hrs_ldc21 = w_hrs_ldc21 + fsh_ldc_21_cura, 
+			w_hrs_ldc22 = w_hrs_ldc22 + fsh_ldc_22_cura, 
+			w_hrs_ldc23 = w_hrs_ldc23 + fsh_ldc_23_cura, 
+			w_hrs_ldc24 = w_hrs_ldc24 + fsh_ldc_24_cura, 
+			w_hrs_ldc26 = w_hrs_ldc26 + fsh_ldc_26_cura, 
+			w_hrs_ldc27 = w_hrs_ldc27 + fsh_ldc_27_cura, 
+			w_hrs_ldc28 = w_hrs_ldc28 + fsh_ldc_28_cura, 
+			w_hrs_ldc29 = w_hrs_ldc29 + fsh_ldc_29_cura, 
+			w_hrs_ldc92 = w_hrs_ldc92 + fsh_ldc_92_cura, 
+			
+			w_hrs_ldc41 = w_hrs_ldc41 + fsh_ldc_41_cura, 
+			w_hrs_ldc42 = w_hrs_ldc42 + fsh_ldc_42_cura, 
+			w_hrs_ldc43 = w_hrs_ldc43 + fsh_ldc_43_cura, 
+			w_hrs_43_ald = w_hrs_43_ald + fsh_ldc_l43a_cura, 
+			w_hrs_43_flt = w_hrs_43_flt + fsh_ldc_l43f_cura, 
+			w_hrs_43_ltr = w_hrs_43_ltr + fsh_ldc_l43l_cura, 
+			w_hrs_43_pps = w_hrs_43_pps + fsh_ldc_l43p_cura, 
+			w_hrs_ldc44 = w_hrs_ldc44 + fsh_ldc_44_cura, 
+			w_hrs_ldc45 = w_hrs_ldc45 + fsh_ldc_45_cura, 
+			w_hrs_ldc46 = w_hrs_ldc46 + fsh_ldc_46_cura, 
+			w_hrs_ldc48 = w_hrs_ldc48 + fsh_ldc_48_cura, 
+			w_hrs_ldc47 = w_hrs_ldc47 + fsh_ldc_47_cura, 
+			w_hrs_ldc80 = w_hrs_ldc80 + fsh_ldc_80_cura, 
+			w_vol_box_flt = w_vol_box_flt + fsh_boxf_cura, 
+			w_vol_box_ltr = w_vol_box_ltr + fsh_boxl_cura, 
+			w_vol_dis_flt = w_vol_dis_flt + fsh_udfl_cura, 
+			w_vol_dis_ltr = w_vol_dis_ltr + fsh_udlt_cura, 
+			w_vol_cas_ltr = w_vol_cas_ltr + fsh_cslt_cura, 
+			w_vol_cas_flt = w_vol_cas_flt + fsh_csfl_cura, 
+			w_vol_dps_ltr = w_vol_dps_ltr + fsh_dps_cura, 
+			w_vol_seq_pcs = w_vol_seq_pcs + fsh_seq_cura, 
+			w_hrs_car_tot = w_hrs_car_tot + fsh_fn2b_cura, 
+			w_hrs_car_al = w_hrs_car_al + fsh_al2c_cura, 
+			w_hrs_car_sl = w_hrs_car_sl + fsh_sl2c_cura, 
+			w_hrs_car_ot = w_hrs_car_ot + fsh_ot2b_cura, 
+			w_hrs_car_lwop = w_hrs_car_lwop + fsh_wp2c_cura, 
+			w_vol_pps = w_vol_pps + fsh_pk1k_cura, 
+			w_hrs_clk_tot = w_hrs_clk_tot + fsh_fn4_cura, 
+			w_hrs_clk_al = w_hrs_clk_al + fsh_al4_cura, 
+			w_hrs_clk_sl = w_hrs_clk_sl + fsh_sl4_cura, 
+			w_hrs_clk_ot = w_hrs_clk_ot + fsh_ot4_cura, 
+			w_hrs_clk_lwop = w_hrs_clk_lwop + fsh_wp4_cura, 
+						
+			w_cty_cupd = w_cty_cupd + fsh_cupd_cura,
+           
+            w_fss_dps=w_fss_dps+fsh_fss_dps,
+            w_vol_dps_flt=w_vol_dps_flt+fsh_fss_dps,
+			
+			w_vol_pkcc=w_vol_pkcc+fsh_pkcc_cura,
+			
+			w_sb2b=w_sb2b+fsh_sb2b_cura,
+		
+			-- GDW Add FN2C and OT2C
+			w_hrs_fn2c_tot = w_hrs_fn2c_tot + fsh_fn2c_cura,
+			w_hrs_fn2c_ot = w_hrs_fn2c_ot + fsh_ot2c_cura,
+			w_hrs_fn2c_tot_plan = w_hrs_fn2c_tot_plan + fsh_fn2c_plan
+			
+			FROM master_flash with(nolock)
+			WHERE w_fy = @workingdate_fiscal_year 
+			AND fsh_fy = @workingdate_previous_fiscal_year 
+			AND w_wk = 1 
+            AND fsh_wk = 53 
+            AND w_fin_nbr = fsh_fin_nbr_station		-- Handled
+
+			-- GDW Re-Calc CPDC using new SB2B and CUPD (53 into 1 sum not present in master_flash)
+			UPDATE var_weekly
+			SET
+			w_cpdc=CASE WHEN w_cty_cupd = 0 THEN 0 ELSE (w_sb2b*1.0)/w_cty_cupd END
+			WHERE w_fy = @workingdate_fiscal_year 
+			AND w_wk = 1
+		END
+
+		--week 53 add to week 1 if last FY has only 52 weeks (incomplete Week 53)  
+		IF (@ann_nbr_weeks_double_sply <> 53) BEGIN --CBA 20181023 add logic to handle week 53 over 2 years
+			UPDATE var_weekly
+			SET 
+			w_sply_hrs = (w_sply_hrs + fsh_ldc_21_curs 
+				+ fsh_ldc_22_curs + fsh_ldc_23_curs + fsh_ldc_24_curs + fsh_ldc_26_curs 
+				+ fsh_ldc_27_curs + fsh_ldc_28_curs + fsh_ldc_29_curs + fsh_ldc_92_curs),
+			
+			w_hrs_ldc21sply = w_hrs_ldc21sply + fsh_ldc_21_curs, 
+			w_hrs_ldc22sply = w_hrs_ldc22sply + fsh_ldc_22_curs, 
+			w_hrs_ldc23sply = w_hrs_ldc23sply + fsh_ldc_23_curs, 
+			w_hrs_ldc24sply = w_hrs_ldc24sply + fsh_ldc_24_curs, 
+			w_hrs_ldc26sply = w_hrs_ldc26sply + fsh_ldc_26_curs, 
+			w_hrs_ldc27sply = w_hrs_ldc27sply + fsh_ldc_27_curs, 
+			w_hrs_ldc28sply = w_hrs_ldc28sply + fsh_ldc_28_curs, 
+			w_hrs_ldc29sply = w_hrs_ldc29sply + fsh_ldc_29_curs, 
+			w_hrs_ldc92sply = w_hrs_ldc92sply + fsh_ldc_92_curs, 
+			
+			w_sply_dels = w_sply_dels + fsh_cupd_curs, 
+			
+			-- GDW Add Cased LTR and FLT SPLY, PKCC, CPDC and SB2B
+			w_vol_cas_ltr_sply=w_vol_cas_ltr_sply+fsh_cslt_curs,
+			w_vol_cas_flt_sply=w_vol_cas_flt_sply+fsh_csfl_curs,
+			
+			w_vol_pkcc_sply=w_vol_pkcc_sply+fsh_pkcc_curs,
+			
+			w_sb2b_sply=w_sb2b_sply+fsh_sb2b_curs,
+			-- GDW Add FN2C and OT2C
+			w_hrs_fn2c_tot_sply = w_hrs_fn2c_tot_sply + fsh_fn2c_curs,
+			w_hrs_fn2c_ot_sply = w_hrs_fn2c_ot_sply + fsh_ot2c_curs
+			FROM master_flash with(nolock)
+			WHERE w_fy = @workingdate_fiscal_year 
+			AND fsh_fy = @workingdate_previous_fiscal_year 
+			AND w_wk = 1 AND fsh_wk = 53 AND w_fin_nbr = fsh_fin_nbr_station		-- Handled
+
+			-- GDW Re-Calc CPDC using new SB2B and CUPD (53 into 1 sum not present in master_flash)
+			UPDATE var_weekly
+			SET
+			
+			w_cpdc_sply=CASE WHEN w_sply_dels = 0 THEN 0 ELSE (w_sb2b_sply*1.0)/w_sply_dels END
+			WHERE w_fy = @workingdate_fiscal_year 
+			AND w_wk = 1
+		END
+
+
+update var_base set b_pct_standard = 1 from var_weekly with(nolock) where b_fin_nbr = w_fin_nbr and w_fss_dps > 0 and 
+(w_fy*100)+w_wk = (select top 1 (w_fy*100)+w_wk from var_weekly with(nolock) order by w_fy desc,w_wk desc)
+
+update var_weekly set w_carr_22=carr_ldc22,w_carr_1700=carr_1700 
+from dbo.cdv_carr_1700 with(nolock) where carr_wk=w_wk and carr_fin_nbr=w_fin_nbr 
+and carr_fy=w_fy and w_fy=(select top 1 proc_fy from dbo.var_processing_fy)
+
+update var_weekly set w_cty_rte = dois_brtes, w_cty_del = dois_bDels, w_dois_brk=dois_ofc_break_ind,
+w_hrs_fot = dois_bFot, w_hrs_fot_w_brk = dois_fot_w_ofc_brk
+from Master_Dois with(nolock) where dois_fy = w_fy and dois_wk = w_wk and dois_fin_nbr = w_fin_nbr
+and w_fy>=(select top 1 proc_fy-1 from dbo.var_processing_fy)
+
+		set @p_error = @@error
+		
+		if (@p_error <> 0)
+			begin 
+				insert into dbo.error_log(error_message, step_number, date_time, system_name)
+				values(@p_error, '3', getdate(), 'VAR_WEEKLY')
+				exec pcdv_delpvar.dbo.SendEmail @Error = @p_error, @System = 'VAR_WEEKLY', @Step = '3'
+			end 
+		set @p_error = 0
+		
+		print 'finished update (step 3) '
+		print getdate();
+		
+
+		-- step 4
+		update var_weekly 
+		set w_cty_car_ft=coins_lnc_134,
+			w_cty_car_pt=coins_lnc_434,
+			w_clk_ft=(coins_lnc_110-coins_49_110),
+			w_cty_car_ptr=coins_lnc_334,
+			w_clk_pt=(coins_lnc_410-coins_49_410),
+			w_clk_ptr=(coins_lnc_310-coins_49_310),
+			w_mh_ft=coins_lnc_120,
+			w_mh_pt=coins_lnc_420,
+			w_mh_ptr=coins_lnc_320,
+			w_pm=(coins_lnc_80+coins_lnc_380+coins_lnc_589),
+			w_pmr=coins_lnc_580,
+			w_rur_car_ft=coins_lnc_710,
+			w_rur_car_pt=coins_lnc_760,
+			w_cty_car_te=coins_lnc_834+coins_lnc_844
+		FROM master_coins with(nolock)
+		where w_fin_nbr = coins_fin_nbr_station and w_fy=coins_fy
+		
+		
+		
+update PCDV_DW.dbo.var_base set b_fss_ind=0
+
+DECLARE 
+@SQLCmd VARCHAR(MAX) = '',
+@CATInd BIT,
+@CSVServerName VARCHAR(255);
+
+SELECT @CATInd = srv_cat_ind
+FROM var_servers.dbo.var_servers WITH (NOLOCK)
+WHERE srv_name = @@SERVERNAME
+AND srv_db_ind = 1
+AND srv_active_ind = 1;
+
+SELECT @CSVServerName = srv_name
+FROM var_servers.dbo.var_servers WITH (NOLOCK)
+WHERE srv_db_app = 'CSV'
+AND srv_cat_ind = @CATInd
+AND srv_db_ind  = 1
+AND srv_active_ind = 1;
+
+/* 2019-01-24 wildgk; abstract call to F4 server for FSS flags data */
+SET @SQLCmd = '
+update PCDV_DW.dbo.var_base 
+set b_fss_ind=1,
+    b_date=getdate() 
+where b_fin_nbr in (select b_fin_nbr from ' + @CSVServerName + '.pcsv_dw.dbo.var_base WHERE b_fss_ind=1);';
+
+EXEC(@SQLCmd);
+
+		
+		set @p_error = @@error
+		
+		if (@p_error <> 0)
+			begin 
+				insert into dbo.error_log(error_message, step_number, date_time, system_name)
+				values(@p_error, '4', getdate(), 'VAR_WEEKLY')
+				exec pcdv_delpvar.dbo.SendEmail @Error = @p_error, @System = 'VAR_WEEKLY', @Step = '4'
+			end 
+		set @p_error = 0
+		
+		print 'finished update (step 4) '
+		print getdate();
+		
+
+		-- step 5
+		UPDATE var_weekly
+		SET  w_del_days = 
+			(select sum(cal_del_days)
+			from master_calendar with(nolock)
+			where w_fy = cal_fy_long and w_wk = cal_fy_wk
+			group by cal_fy_long,cal_fy_wk)
+		where  w_fy=@workingdate_fiscal_year
+
+		/* CBA/JW 20181023 reversed non-intuitive cal_fy_long+1 logic */
+
+		UPDATE var_weekly
+		SET w_sply_del_days = (select sum(cal_del_days)
+				                from master_calendar with(nolock)
+				                where cal_fy_long = @workingdate_previous_fiscal_year
+							    and w_wk = cal_fy_wk
+				                group by cal_fy_long,cal_fy_wk)
+		where  w_fy=@workingdate_fiscal_year
+
+		
+		set @p_error = @@error
+		
+		if (@p_error <> 0)
+			begin 
+				insert into dbo.error_log(error_message, step_number, date_time, system_name)
+				values(@p_error, '5', getdate(), 'VAR_WEEKLY')
+				exec pcdv_delpvar.dbo.SendEmail @Error = @p_error, @System = 'VAR_WEEKLY', @Step = '5'
+			end 
+		set @p_error = 0
+
+		print 'finished update (step 5) '
+		print getdate();
+
+	end
+
+update PCDV_DW.dbo.var_base set b_prod_dps_pct = .9 where b_prod_dps_pct = 0
+
+-- Fill w_23_sun_pcs from aau sunday/holiday count from F4 server. DRR 08032014
+-- modified for Christmas Sunday parcels DRR 120814
+
+declare @aau_fy int;
+
+IF OBJECT_ID('tempdb..#aau_sun') IS NOT NULL BEGIN
+    DROP TABLE #aau_sun;
+END
+
+IF OBJECT_ID('tempdb..#aau_suna') IS NOT NULL BEGIN
+    DROP TABLE #aau_suna;
+END
+
+select top 1 @aau_fy = fy_long 
+from Workingdate with(nolock) 
+order by fy_long;
+
+CREATE TABLE #aau_sun (pts_fin_nbr CHAR(6), pts_wk INT, sun_cnt INT);
+
+/* 2019-01-23 wildgk; abstract call to F4 server for PTS data */
+
+-- Fill w_23_sun_pcs from aau sunday/holiday count from F4 server. DRR 08032014
+-- modified for Christmas Sunday parcels DRR 120814
+
+SET @SQLCmd = '
+INSERT into #aau_sun (pts_fin_nbr, pts_wk, sun_cnt)
+SELECT pts_fin_nbr, pts_wk,SUM(pts_distcount) sun_cnt 
+from ' + @CSVServerName + '.PCSV_dw.dbo.CSV_PTS_Daily with(nolock),
+    ' + @CSVServerName + '.PCSV_dw.dbo.var_base with(nolock)
+where pts_fin_nbr = b_fin_nbr 
+and b_csv_ind=1 
+and b_mpoo<>''x'' 
+and b_48_sun_dly_pcs>0 
+and b_48_sun_spokes>0 
+and pts_fy=' + CAST(@aau_fy AS CHAR(4)) + 'and pts_day=1
+and datepart(mm,pts_eventdate)<>12
+group by pts_fin_nbr,pts_wk
+union
+SELECT pts_fin_nbr,pts_wk,SUM(pts_distcount)sun_cnt
+from ' + @CSVServerName + '.PCSV_dw.dbo.CSV_PTS_Daily with(nolock),
+    ' + @CSVServerName + '.PCSV_dw.dbo.var_base with(nolock)
+where pts_fin_nbr=b_fin_nbr 
+and b_csv_ind=1 
+and b_mpoo<>''x'' 
+and b_48_sun_dly_pcs>0 
+and b_48_sun_spokes > 0 
+and pts_fy=' + CAST(@aau_fy AS CHAR(4)) + '
+and pts_eventdate in (select eve_date from pcdv_DelpVar.dbo.avar_events with(nolock) where eve_usps_holiday_ind=1) 
+and datepart(mm,pts_eventdate)<>12
+group by pts_fin_nbr,pts_wk
+union
+SELECT pts_fin_nbr,pts_wk,SUM(pts_distcount)sun_cnt
+from ' + @CSVServerName + '.PCSV_dw.dbo.CSV_PTS_Daily with(nolock),
+    PCDV_DW.dbo.var_base with(nolock)
+where pts_fin_nbr=b_fin_nbr 
+and b_cdv_ind=1 
+and b_mpoo<>''x'' 
+and pts_fy=' + CAST(@aau_fy AS CHAR(4)) + '
+and pts_day=1 
+and datepart(mm,pts_eventdate)=12
+group by pts_fin_nbr,pts_wk 
+union
+SELECT pts_fin_nbr,pts_wk,SUM(pts_distcount)sun_cnt
+from ' + @CSVServerName + '.PCSV_dw.dbo.CSV_PTS_Daily with(nolock),
+    PCDV_DW.dbo.var_base with(nolock)
+where pts_fin_nbr=b_fin_nbr 
+and b_cdv_ind=1 
+and b_mpoo<>''x'' 
+and pts_fy=' + CAST(@aau_fy AS CHAR(4)) + '
+and pts_eventdate in (select eve_date from PCdV_DelpVar.dbo.avar_events with(nolock) where eve_usps_holiday_ind=1) 
+and datepart(mm,pts_eventdate)=12
+group by pts_fin_nbr,pts_wk;';
+
+EXEC(@SQLCmd);
+
+select pts_fin_nbr,pts_wk,SUM(sun_cnt)sun_cnt 
+into #aau_suna 
+from #aau_sun 
+group by pts_fin_nbr,pts_wk
+
+update var_weekly set w_23_sun_pcs =sun_cnt from #aau_suna where w_fin_nbr=pts_fin_nbr and w_wk=pts_wk and w_fy=@aau_fy
+
+--2023-02-09; KBZKG0.  Add Execute of pr_volume_factors_update at the bottom of procedure.
+EXEC dbo.pr_volume_factors_update;
+
+IF OBJECT_ID('tempdb..#aau_sun') IS NOT NULL BEGIN
+    DROP TABLE #aau_sun;
+END
+
+IF OBJECT_ID('tempdb..#aau_suna') IS NOT NULL BEGIN
+    DROP TABLE #aau_suna;
+END

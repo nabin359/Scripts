@@ -1,0 +1,899 @@
+USE [PCSV_dw]
+GO
+/****** Object:  StoredProcedure [dbo].[sp_csv_fdb_import]    Script Date: 1/7/2026 3:53:52 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-- =============================================
+-- Author:		GWALLS  (JWILD Contributed File Handling Sections)
+-- Create date: 01/05/2012
+-- Description:	Import Facilities Database (FDB) Files 
+--
+-- 122713 GDW FY2014 F4 Changes:  For POStPlan (2/4/6) Offices, Use b_level for b_calc_level instead of previous archived value.
+-- 010914 GDW FY2014 F4 Changes:  Level 6 PTPO Offices Admin Base = 0.75
+-- 010914 GDW FY2014 F4 Changes:  Stop setting b_csv_scans here
+-- 040415 GDW Add BUWH_New_Week Agent Job call/start to pick up "newly FDB'ed Level 18 Offices"
+-- 2019-06-28 CBA; Add handling for new instances of legitimate AlphaNumeric unit level values in source data.
+-- 2021-04-01 CBA; Add file handling via new stored proc on var_servers. No file handling before this.
+-- =============================================
+ALTER PROCEDURE [dbo].[sp_csv_fdb_import] 
+
+AS
+BEGIN
+	-- SET NOCOUNT ON added to prevent extra result sets from
+	-- interfering with SELECT statements.
+	SET NOCOUNT ON;
+
+	DECLARE @DataFilesTable TABLE (
+		DiskFileName VARCHAR(255),
+		FileCreationStamp DATETIME,
+		FileSize VARCHAR(50))
+	DECLARE @BackupFilesTable TABLE (
+		DiskFileName VARCHAR(255),
+		FileCreationStamp DATETIME,
+		FileSize VARCHAR(50))
+
+	CREATE TABLE #DirectoryListFDB (MyID INT IDENTITY(1,1) PRIMARY KEY, FullPath VARCHAR(2000))
+	DECLARE @BackupFileName VARCHAR(255)
+	DECLARE @BackupFilePath VARCHAR(255)
+	DECLARE @DataFileName VARCHAR(255)
+	DECLARE @DataFileBaseName VARCHAR(255)
+	DECLARE @DataFileExtension VARCHAR(255)
+	DECLARE @DataFileMask VARCHAR(255)
+	DECLARE @DataFilePath VARCHAR(255)
+	DECLARE @DataFileDate VARCHAR(255)
+	DECLARE @CommandLine VARCHAR(255)
+	DECLARE @DataFileCount INT
+	DECLARE @BackupFileCount INT
+	DECLARE @DataFileBase VARCHAR(255)
+	DECLARE @CopyCmd VARCHAR(255)
+	DECLARE @DelCmd VARCHAR(255)
+	DECLARE @ImportStep INT
+	DECLARE @ImportSVC	VARCHAR(10)
+	DECLARE @ImportSession VARCHAR(25)
+	DECLARE @ImportInterval VARCHAR(15)
+	DECLARE @ImportStart DATETIME
+	DECLARE @ImportXferDT VARCHAR(25)
+	DECLARE @ImportElements INT
+	DECLARE @DebugView CHAR(5)
+	DECLARE @BulkInsertTable VARCHAR(25)
+	
+
+	SELECT @ImportSession = GETDATE()
+	SET @ImportSVC = 'FDB'
+	SET @ImportInterval = 'WEEKLY'
+	SET @DebugView = 'YES' -- YES or NO
+	SET @DataFileExtension = '.txt'
+	SET @DataFileBase = 'CSV'
+	SET @DataFilePath = 'E:\Data\FDB\'
+	SET @BackupFilePath = @DataFilePath + 'Backup\'
+	SET @DataFileMask = @DataFileBase + '_*' + @DataFileExtension + ' /tc'
+	BEGIN
+
+		SET @CommandLine = 'dir ' + @DataFilePath + @DataFileMask 
+		SELECT @CommandLine
+		INSERT INTO 
+		#DirectoryListFDB (FullPath)
+		EXECUTE master..xp_cmdshell @CommandLine
+
+	END
+
+	select * from #DirectoryListFDB where FullPath like '%CSV_%.txt'
+	INSERT INTO @DataFilesTable (DiskFileName, FileCreationStamp, FileSize)
+	SELECT LTRIM(SUBSTRING (FullPath, 40, 1000)) AS 'DiskFileName',
+	LTRIM(SUBSTRING (FullPath, 1, 20)) AS 'FileCreationStamp',
+	LTRIM(SUBSTRING (FullPath, 21, 18)) AS 'FileSize'
+	FROM #DirectoryListFDB where FullPath like '%CSV_%.txt'
+	
+	IF @DebugView = 'YES'
+	BEGIN
+		select * from @DataFilesTable order by FileCreationStamp
+	END
+
+	-- Count the files to process
+	SELECT @DataFileCount = COUNT(0)
+	FROM @DataFilesTable
+	WHERE DiskFileName like 'CSV_%.txt'
+
+	-- Check to see if we have something to process and return if not
+	IF @DebugView = 'YES'
+	BEGIN
+		PRINT 'DataFilesCount is ' + CAST(@DataFileCount as VARCHAR)
+	END
+	IF (@DataFileCount != 2)
+	BEGIN
+
+		PRINT 'No Files to Process'
+		RETURN
+
+	END
+	ELSE
+	BEGIN 
+
+		/* */
+		PRINT 'Files Exist To Process'
+		-- Create a cursor to iterate over the file set 
+		DECLARE @IterationCount int
+		set @IterationCount = 0
+		
+		PRINT 'Doing Work Now'
+
+		PRINT 'FDB data import begin' 
+
+		truncate table fdb_hours
+		truncate table fdb_facility
+		
+		DECLARE @CursorFileName VARCHAR(255)
+		DECLARE @CursorFileCreationDate DATETIME
+		DECLARE @CursorFileSize VARCHAR(50) 
+		DECLARE FileListCursor CURSOR LOCAL FOR
+		SELECT DiskFileName, FileCreationStamp, FileSize 
+		FROM @DataFilesTable
+		OPEN FileListCursor 
+
+		-- Priming read
+		FETCH NEXT FROM FileListCursor INTO @CursorFileName, @CursorFileCreationDate, @CursorFileSize
+		WHILE @@FETCH_STATUS = 0 
+		BEGIN
+			PRINT 'Iterating ' + @CursorFileName
+			SET @ImportStep = 1
+			SELECT @ImportStart = GETDATE()
+			IF @DebugView = 'YES'
+			BEGIN
+				PRINT @ImportXferDt
+			END
+
+			-- =============================================
+			-- Start of FDB file processing, Step 1
+			-- =============================================
+
+			-- check to see if file exists
+ 			DECLARE @FileName varchar(255)
+			DECLARE @File_Exists int 
+			DECLARE @SQL_Command varchar(255)
+			DECLARE @SQL_SLCT_Command varchar(255)
+			SET @FileName = @DataFilePath + @CursorFileName
+				EXEC Master.dbo.xp_fileexist @FileName, @File_Exists OUT
+			IF @File_Exists = 1 
+			BEGIN
+				PRINT 'File ' + @CursorFileName + ' Found - preparing to bulk import'
+				-- #FDB_import is the 'full' table, including calc'ed columns
+				IF @IterationCount = 0
+				BEGIN
+					PRINT 'Iteration Nonzero'
+				END
+				ELSE
+				BEGIN
+					/*
+					truncate table #FDB_import_file
+					truncate table #FDB_import
+					*/
+					PRINT 'Iteration Nonzero'
+				END
+				set @IterationCount = @IterationCount + 1
+
+
+				PRINT 'FDB data import begin' 
+				
+				IF @CursorFileName = 'csv_hours.txt'
+				BEGIN
+					SET @BulkInsertTable = 'fdb_hours'
+				END
+				ELSE
+				BEGIN
+					--SET @BulkInsertTable = 'fdb_facility'				
+                    set @BulkInsertTable = '#tmpFDBImport';
+
+                    If object_id('tempdb..#tmpFDBImport') is not null begin
+                        drop table #tmpFDBImport;
+                    end
+
+                        create table #tmpFDBImport(
+                        fdb_id char(7) null,
+                        fdb_lead_fin char(6) null default (''),
+                        fdb_fin char(6) null default (''),
+                        fdb_level_full varchar(255) null default (''),
+                        fdb_cag char(1) null default (''),
+                        fdb_sfas char(4) null default ('0000'),
+						fdb_Facility_Type           varchar(50) null default (''),
+                        fdb_Facility_sub_type		varchar(25) null default (''),
+                        fdb_AMS_Locale_Key		    varchar(10) null default (''),
+                        fdb_AMS_Locale_Type		    varchar(2) null default (''),
+                        fdb_FMS_Quarter_Type		varchar(2) null default (''),
+                        fdb_Tier_Structure_Level	varchar(2) null default (''),
+                        fdb_FEDSTRIP_number		    varchar(10) null default (''),
+                        fdb_Bullet_Proof_Glass	    varchar(2) null default (''),
+                        fdb_Total_SSK_Count 		integer  default (0)										   						
+						);
+				END				
+				
+				set @SQL_Command = 'BULK INSERT ' + @BulkInsertTable + ' from ''' + @FileName + ''' ' + ' WITH (FIRSTROW=1, FIELDTERMINATOR= '','', ROWTERMINATOR=''\n'') '	
+
+				IF @DebugView = 'YES'
+				BEGIN
+					PRINT @SQL_Command
+				END
+
+				exec (@SQL_Command);
+
+                SET @ImportElements = @@ROWCOUNT
+				IF @DebugView = 'YES'
+				BEGIN
+					--select top 5 * from @BulkInsertTable
+					set @SQL_SLCT_Command = 'SELECT TOP 5 * from ' + @BulkInsertTable + ' WITH(NOLOCK)'
+					exec (@SQL_SLCT_Command) 
+				END
+
+                if @CursorFileName = 'csv_facility.txt' begin
+
+                    insert into pcsv_dw.dbo.fdb_facility (fdb_id, fdb_lead_fin, fdb_fin, fdb_level_full, fdb_cag, fdb_sfas
+					 ,fdb_Facility_Type       
+					 ,fdb_Facility_sub_type	
+					 ,fdb_AMS_Locale_Key		
+					 ,fdb_AMS_Locale_Type		
+					 ,fdb_FMS_Quarter_Type	
+					 ,fdb_Tier_Structure_Level
+					 ,fdb_FEDSTRIP_number		
+					 ,fdb_Bullet_Proof_Glass	
+					 ,fdb_Total_SSK_Count 	
+					)
+                    select 
+                        fdb_id
+                        ,fdb_lead_fin
+                        ,fdb_fin 
+                        ,fdb_level_full
+                        ,fdb_cag 
+                        ,fdb_sfas
+						,fdb_Facility_Type       
+					    ,fdb_Facility_sub_type	
+					    ,fdb_AMS_Locale_Key		
+					    ,fdb_AMS_Locale_Type		
+					    ,fdb_FMS_Quarter_Type	
+					    ,fdb_Tier_Structure_Level
+					    ,fdb_FEDSTRIP_number		
+					    ,fdb_Bullet_Proof_Glass	
+					    ,fdb_Total_SSK_Count 	
+                    from #tmpFDBImport;
+
+                    /* test 1 is strictly numeric, just update it */
+                    update pcsv_dw.dbo.fdb_facility
+                    set fdb_level = cast(fdb_level_full as int)
+                    where isnumeric(fdb_level_full) = 1;
+
+                    /* test 2 is 2 numbers and 1 char b */
+                    update pcsv_dw.dbo.fdb_facility
+                    set fdb_level = cast(left(fdb_level_full, 2) as int)
+                    where patindex('[0-9][0-9][b]', fdb_level_full) = 1;
+                end
+                
+				-- =============================================
+				-- Log Metrics For This File, Step 2, 3
+				-- =============================================			
+				SET @ImportStep = @ImportStep + 1
+				INSERT INTO dbo.import_status (svc, interval, file_name, step, 
+							elements, file_size, xfer_dt, file_dt, start_dt, 
+							end_dt, session_dt) VALUES (@ImportSVC, @ImportInterval, 
+							@CursorFileName, @ImportStep, @ImportElements, 
+							@CursorFileSize, @CursorFileCreationDate, 
+							@ImportXferDT, @ImportStart, GETDATE(), @ImportSession)
+
+			END
+			
+			-- End of File Loop.
+		
+
+			-- =============================================
+			-- End of FDB file processing
+			-- =============================================
+
+			FETCH NEXT FROM FileListCursor INTO @CursorFileName, @CursorFileCreationDate, @CursorFileSize
+		END
+
+
+	END
+
+	-- Pipeline 
+
+	SELECT @ImportStart = GETDATE()
+	
+	-- =============================================
+	-- Fix Times, Step 4
+	-- =============================================
+
+	SET @ImportStep = @ImportStep + 1;
+	update dbo.fdb_hours set fdb_start_time = replace(fdb_start_time,' ','');
+	update dbo.fdb_hours set fdb_end_time = replace(fdb_end_time,' ','');
+        
+	IF @DebugView = 'YES'
+	BEGIN
+		select top 5 * from dbo.fdb_hours with(nolock);
+	END
+
+	update dbo.fdb_hours 
+	set fdb_start_time = '0'+fdb_start_time 
+	where len(fdb_start_time)<4;
+
+	update dbo.fdb_hours 
+	set fdb_end_time = '0'+fdb_end_time 
+	where len(fdb_end_time)<4;
+
+	update dbo.fdb_hours 
+	set fdb_start_time = '0'+fdb_start_time 
+	where len(fdb_start_time)<4;
+
+	update dbo.fdb_hours 
+	set fdb_end_time = '0'+fdb_end_time 
+	where len(fdb_end_time)<4;
+
+	update dbo.fdb_hours 
+	set fdb_start_time = '0'+fdb_start_time 
+	where len(fdb_start_time)<4;
+
+	update dbo.fdb_hours 
+	set fdb_end_time = '0'+fdb_end_time 
+	where len(fdb_end_time)<4;
+
+	update dbo.fdb_hours 
+	set fdb_start_time = '0'+fdb_start_time 
+	where len(fdb_start_time)<4;
+
+	update dbo.fdb_hours 
+	set fdb_end_time = '0'+fdb_end_time 
+	where len(fdb_end_time)<4;
+
+	IF @DebugView = 'YES'
+	BEGIN
+		select top 5 * from dbo.fdb_hours with(nolock);
+	END
+
+	-- =============================================
+	-- Fix Fin, Step 5
+	-- =============================================
+
+	SET @ImportStep = @ImportStep + 1
+	delete from dbo.fdb_facility 
+	where fdb_fin = '' and fdb_lead_fin = ''
+
+	IF @DebugView = 'YES'
+	BEGIN
+		select top 5 * from dbo.fdb_facility with(nolock)
+	END
+
+
+	-- DIVERT
+	-- Swap fdb_lead_fin and fdb_fin	
+	update fdb_facility set fdb_lead_fin=fdb_fin, fdb_fin=fdb_lead_fin
+	-- Copy Field 3 (AMS Station Code FIN) if Field 2 (FDB Unit FIN) doesn't match and Field 3 does.
+	-- But first, eliminate comparisons when var_base has more than one record with an FDB ID
+	select b_fdb_id, b_fin_nbr into #fdb_fin_uniques from var_base with(nolock) group by b_fdb_id, b_fin_nbr
+	delete from #fdb_fin_uniques where b_fdb_id in (select b_fdb_id from #fdb_fin_uniques group by b_fdb_id having count(0) > 1)
+	--update fdb_facility set fdb_fin = fdb_lead_fin from var_base where fdb_id=b_fdb_id and fdb_fin != b_fin_nbr and fdb_lead_fin = b_fin_nbr
+	update fdb_facility set fdb_fin = fdb_lead_fin from #fdb_fin_uniques where fdb_id=b_fdb_id and fdb_fin != b_fin_nbr and fdb_lead_fin = b_fin_nbr
+	drop table #fdb_fin_uniques
+
+	-- =============================================
+	-- Update Var_Base, Step 6
+	-- =============================================
+
+	SET @ImportStep = @ImportStep + 1
+	update var_base set 
+	b_time_ofc_opn_sat ='',
+	b_time_mail_arv_sat ='',
+	b_time_box_up_sat ='',
+	b_time_win_opn_sat='',
+	b_time_win_cls_lun_sat='',
+	b_time_win_opn_lun_sat ='',
+	b_time_win_cls_sat ='',
+	b_time_win_opn_mf  ='',
+	b_time_win_cls_mf  ='',
+	b_time_win_cls_lun_mf  ='', 
+	b_time_win_opn_lun_mf ='', 
+	b_time_ofc_cls_sat ='',
+	b_hrs_sat_opn_time =0,
+	b_hrs_winshare_sat =0;
+
+
+	select fdb_id,fdb_field_name,fdb_doth,
+	min(fdb_start_time)fdb_start_time,max(fdb_end_time)fdb_end_time,count(*)cnt,
+	max(fdb_start_time)fdb_lnch_in,min(fdb_end_time)fdb_lnch_out
+	into #lunch1
+	from fdb_hours with(nolock)
+	group by fdb_id,fdb_field_name,fdb_doth
+	order by fdb_id,fdb_field_name,fdb_doth
+
+	update dbo.var_base 
+	set b_time_ofc_opn_mf = left(fdb_start_time,2)+':'+right(fdb_start_time,2),
+	b_time_ofc_cls_mf = left(fdb_end_time,2)+':'+right(fdb_end_time,2)
+	from #lunch1 a with(nolock), dbo.fdb_facility b with(nolock)
+	where b_fin_nbr = fdb_fin and a.fdb_id = b.fdb_id and b_fdb_id = b.fdb_id
+	and fdb_field_name = 'UNIT_TIMES' and fdb_doth = 'Monday'
+
+	update dbo.var_base 
+	set b_time_ofc_opn_sat = left(fdb_start_time,2)+':'+right(fdb_start_time,2),
+	b_time_ofc_cls_sat = left(fdb_end_time,2)+':'+right(fdb_end_time,2)
+	from #lunch1 a with(nolock), dbo.fdb_facility b with(nolock)
+	where b_fin_nbr = fdb_fin and a.fdb_id = b.fdb_id and b_fdb_id = b.fdb_id
+	and fdb_field_name = 'UNIT_TIMES' and fdb_doth = 'Saturday'
+
+	update dbo.var_base 
+	set b_time_mail_arv_mf = left(fdb_start_time,2)+':'+right(fdb_start_time,2)
+	from #lunch1 a with(nolock), dbo.fdb_facility b with(nolock)
+	where b_fin_nbr = fdb_fin and a.fdb_id = b.fdb_id and b_fdb_id = b.fdb_id
+	and fdb_field_name = 'FST_MAIL_ARVL' and fdb_doth = 'Monday'
+
+	update dbo.var_base 
+	set b_time_mail_arv_sat = left(fdb_start_time,2)+':'+right(fdb_start_time,2)
+	from #lunch1 a with(nolock), dbo.fdb_facility b with(nolock)
+	where b_fin_nbr = fdb_fin and a.fdb_id = b.fdb_id and b_fdb_id = b.fdb_id
+	and fdb_field_name = 'FST_MAIL_ARVL' and fdb_doth = 'Saturday'
+
+	update dbo.var_base 
+	set b_time_mail_arv_mf = left(fdb_start_time,2)+':'+right(fdb_start_time,2)
+	from #lunch1 a with(nolock), dbo.fdb_facility b with(nolock)
+	where b_fin_nbr = fdb_fin and a.fdb_id = b.fdb_id and b_fdb_id = b.fdb_id
+	and fdb_field_name = 'FST_MAIL_ARVL' and fdb_doth = 'Monday'
+
+	update dbo.var_base 
+	set b_time_box_up_mf = left(fdb_start_time,2)+':'+right(fdb_start_time,2)
+	from #lunch1 a with(nolock), dbo.fdb_facility b with(nolock)
+	where b_fin_nbr = fdb_fin and a.fdb_id = b.fdb_id and b_fdb_id = b.fdb_id
+	and fdb_field_name = 'BOX_UP' and fdb_doth = 'Monday'
+
+	update dbo.var_base 
+	set b_time_box_up_sat = left(fdb_start_time,2)+':'+right(fdb_start_time,2)
+	from #lunch1 a with(nolock), dbo.fdb_facility b with(nolock)
+	where b_fin_nbr = fdb_fin and a.fdb_id = b.fdb_id and b_fdb_id = b.fdb_id
+	and fdb_field_name = 'BOX_UP' and fdb_doth = 'Saturday'
+
+	update dbo.var_base 
+	set b_time_win_opn_mf = left(fdb_start_time,2)+':'+right(fdb_start_time,2),
+	b_time_win_cls_mf = left(fdb_end_time,2)+':'+right(fdb_end_time,2),
+	b_time_win_cls_lun_mf = left(fdb_lnch_out,2)+':'+right(fdb_lnch_out,2),
+	b_time_win_opn_lun_mf = left(fdb_lnch_in,2)+':'+right(fdb_lnch_in,2)
+	from #lunch1 a with(nolock), dbo.fdb_facility b with(nolock)
+	where b_fin_nbr = fdb_fin and a.fdb_id = b.fdb_id and fdb_doth = 'Monday' and fdb_field_name = 'WIN_SERV_TIMES'  and b_fdb_id = b.fdb_id
+
+	update dbo.var_base 
+	set b_time_win_opn_sat = left(fdb_start_time,2)+':'+right(fdb_start_time,2),
+	b_time_win_cls_sat = left(fdb_end_time,2)+':'+right(fdb_end_time,2),
+	b_time_win_cls_lun_sat = left(fdb_lnch_out,2)+':'+right(fdb_lnch_out,2),
+	b_time_win_opn_lun_sat = left(fdb_lnch_in,2)+':'+right(fdb_lnch_in,2)
+	from #lunch1 a with(nolock), dbo.fdb_facility b with(nolock)
+	where b_fin_nbr = fdb_fin and a.fdb_id = b.fdb_id and fdb_doth = 'Saturday' and fdb_field_name = 'WIN_SERV_TIMES'  and b_fdb_id = b.fdb_id
+
+	update dbo.var_base set b_time_win_cls_lun_mf = '',b_time_win_opn_lun_mf=''
+	where b_time_win_opn_mf = b_time_win_opn_lun_mf 
+
+	update dbo.var_base set b_time_win_cls_lun_mf = '',b_time_win_opn_lun_mf=''
+	where b_time_win_cls_lun_mf >= b_time_win_opn_lun_mf 
+
+	update dbo.var_base set b_time_win_cls_lun_sat = '',b_time_win_opn_lun_sat=''
+	where b_time_win_opn_sat >= b_time_win_opn_lun_sat
+
+	update dbo.var_base set b_time_win_cls_lun_sat = '',b_time_win_opn_lun_sat=''
+	where b_time_win_cls_lun_sat >= b_time_win_opn_lun_sat
+
+	drop table #lunch1
+
+	--select top 3 * From var_base
+
+	update var_base set b_time_box_up_mf = '12:00' where b_time_box_up_mf is null or b_time_box_up_mf = ''
+	update var_base set b_time_mail_arv_mf = '06:00' where b_time_mail_arv_mf is null or b_time_mail_arv_mf = ''
+
+	update var_base 
+	set b_hrs_wrkload_win_hrs = 
+	(((cast(left(b_time_box_up_mf,2)as decimal(9,2))*60)+cast(right(b_time_box_up_mf,2)as decimal(9,2)))-
+	((cast(left(b_time_mail_arv_mf,2)as decimal(9,2))*60)+cast(right(b_time_mail_arv_mf,2)as decimal(9,2))))/60
+
+	update var_base
+	set b_hrs_mf_opn_time = cast((case when b_time_ofc_opn_mf = '' then 0 else
+	(((left(b_time_ofc_cls_mf,2)*60)+(right(b_time_ofc_cls_mf,2)))-
+	((left(b_time_ofc_opn_mf,2)*60)+(right(b_time_ofc_opn_mf,2))))end -
+	case when b_time_win_cls_lun_mf = '' then 0 else
+	(((left(b_time_win_opn_lun_mf,2)*60)+(right(b_time_win_opn_lun_mf,2)))-
+	((left(b_time_win_cls_lun_mf,2)*60)+(right(b_time_win_cls_lun_mf,2))))end)as decimal(9,4))/60
+
+	update var_base
+	set b_hrs_winmf_opn_time = cast(
+	(((left(b_time_win_cls_mf,2)*60)+(right(b_time_win_cls_mf,2)))-
+	((left(b_time_win_opn_mf,2)*60)+(right(b_time_win_opn_mf,2))) -
+	case when b_time_win_cls_lun_mf = '' then 0 else
+	(((left(b_time_win_opn_lun_mf,2)*60)+(right(b_time_win_opn_lun_mf,2)))-
+	((left(b_time_win_cls_lun_mf,2)*60)+(right(b_time_win_cls_lun_mf,2))))end)as decimal(9,4))/60
+	
+	update var_base
+	set b_hrs_winsat_opn_time = cast(
+	(((left(b_time_win_cls_sat,2)*60)+(right(b_time_win_cls_sat,2)))-
+	((left(b_time_win_opn_sat,2)*60)+(right(b_time_win_opn_sat,2))) -
+	case when b_time_win_cls_lun_sat = '' then 0 else
+	(((left(b_time_win_opn_lun_sat,2)*60)+(right(b_time_win_opn_lun_sat,2)))-
+	((left(b_time_win_cls_lun_sat,2)*60)+(right(b_time_win_cls_lun_sat,2))))end)as decimal(9,4))/60
+	
+	update var_base
+	set b_hrs_sat_opn_time = cast((case when b_time_ofc_opn_sat = '' then 0 else
+	(((left(b_time_ofc_cls_sat,2)*60)+(right(b_time_ofc_cls_sat,2)))-
+	((left(b_time_ofc_opn_sat,2)*60)+(right(b_time_ofc_opn_sat,2))))end -
+	case when b_time_win_cls_lun_sat = '' then 0 else
+	(((left(b_time_win_opn_lun_sat,2)*60)+(right(b_time_win_opn_lun_sat,2)))-
+	((left(b_time_win_cls_lun_sat,2)*60)+(right(b_time_win_cls_lun_sat,2))))end)as decimal(9,4))/60
+
+	update var_base
+	set b_hrs_wins_opn_time = case when b_time_win_opn_sat = '' then 0 else
+	cast((((left(b_time_win_cls_sat,2)*60)+(right(b_time_win_cls_sat,2)))-
+	((left(b_time_win_opn_sat,2)*60)+(right(b_time_win_opn_sat,2))) -
+	case when b_time_win_cls_lun_sat = '' then 0 else
+	(((left(b_time_win_opn_lun_sat,2)*60)+(right(b_time_win_opn_lun_sat,2)))-
+	((left(b_time_win_cls_lun_sat,2)*60)+(right(b_time_win_cls_lun_sat,2))))
+	end)as decimal(9,4))/60 end
+
+	update var_base 
+	set b_hrs_lnch_cls_time = case when b_time_win_opn_lun_mf = '' then 0 else
+	(((cast(left(b_time_win_opn_lun_mf,2)as decimal(9,2))*60)+cast(right(b_time_win_opn_lun_mf,2)as decimal(9,2)))-
+	((cast(left(b_time_win_cls_lun_mf,2)as decimal(9,2))*60)+cast(right(b_time_win_cls_lun_mf,2)as decimal(9,2))))/60 end
+
+	update fdb_facility set fdb_fin = fdb_lead_fin where fdb_fin = ''
+
+	--comment out at the end for closeout
+	update var_base set b_level = fdb_level,b_date=GETDATE() from fdb_facility where b_fin_nbr = fdb_fin and b_fdb_id = fdb_id and b_level != fdb_level
+	--added to make level 18s calc at the 18 level DRR 12102014
+	--update var_base set b_calc_level = b_level where b_level>b_calc_level
+	update var_base set b_calc_level = b_level where b_level != b_calc_level
+
+	-- 122713 GDW FY2014 F4 Changes:  For POStPlan (2/4/6) Offices, Use b_level for b_calc_level instead of previous archived value.
+	update var_base set b_calc_level = b_level where b_level in (2,4,6) and b_calc_level != b_level -- (8298 row(s) affected) 122713 initial
+
+	-- 010914 GDW FY2014 F4 Changes:  Level 6 PTPO Offices Admin Base = 0.75
+	--            Assign PTPO status to Level 6 offices according to Rick Helser implementation plan, tabled in gdw_pstpln_full2
+	update var_base set b_ptpo_ind = 0
+	update var_base set b_ptpo_ind = 1 from gdw_pstpln_full2 where b_fin_nbr = pst_fin_nbr and new_facility_type = 'P6' and b_level = 6
+
+	update var_base set b_hrs_pm_admin_base = 1
+	update var_base set b_hrs_pm_admin_base = 0 where b_level in (2,4,6)
+	update var_base set b_hrs_pm_admin_base = 0.75 where b_ptpo_ind=1 and b_level = 6
+	update var_base set b_hrs_pm_admin_base = 2 where b_level in (15,16)
+	update var_base set b_hrs_pm_admin_base = 4 where b_level in (17,18,19,20,21,22,23,24,25,26)
+
+	-- 010914 GDW FY2014 F4 Changes:  Stop setting b_csv_scans here
+	/*
+	update var_Base set b_csv_scans = 
+	case when b_level between 17 and 26 then 75 else 
+	case when b_level between 15 and 16 then 50 else 25 end end
+	where b_sov_ind=1
+	*/
+
+	--update var_base set b_aw48_var_dep_ind =1 where b_aw48_val_1412_ind >=1 and b_sov_ind=1
+	update var_Base set b_awofc_sat_ind =0 where b_sov_ind = 1
+	update var_Base set b_awofc_sat_ind =1 where b_time_win_opn_sat >'' and b_sov_ind = 1
+
+
+	-- =============================================
+	-- Log Metrics For This File, Step 7
+	-- =============================================			
+	SET @ImportStep = @ImportStep + 1
+	INSERT INTO dbo.import_status (svc, interval, file_name, step, 
+				elements, file_size, xfer_dt, file_dt, start_dt, 
+				end_dt, session_dt) VALUES (@ImportSVC, @ImportInterval, 
+				'fdb_import.pseudo', @ImportStep, '1', 
+				'1', @ImportXferDT, @ImportXferDT, @ImportStart, GETDATE(), @ImportSession)
+
+	-- 040415 GDW Add BUWH_New_Week Agent Job call/start to pick up "newly FDB'ed Level 18 Offices"
+	--EXEC msdb.dbo.sp_start_job 'BUWH_New_Week'
+
+	SET @ImportStep = @ImportStep + 1
+	INSERT INTO dbo.import_status (svc, interval, file_name, step, 
+				elements, file_size, xfer_dt, file_dt, start_dt, 
+				end_dt, session_dt) VALUES (@ImportSVC, @ImportInterval, 
+				'buwh_new_week.pseudo', @ImportStep, '1', 
+				'1', @ImportXferDT, @ImportXferDT, @ImportStart, GETDATE(), @ImportSession)
+
+
+	DROP TABLE #DirectoryListFDB
+	
+	CLOSE FileListCursor
+	DEALLOCATE FileListCursor
+
+  exec var_servers.dbo.pr_move_files
+  @sourcepath='E:\Data\FDB\',
+  @filename='csv_hours.txt',
+  @targetpath='E:\Data\FDB\Backup\',
+  @moveorcopy='copy',
+  @addtimestamp=1;
+
+  exec var_servers.dbo.pr_move_files
+  @sourcepath='E:\Data\FDB\',
+  @filename='csv_facility.txt',
+  @targetpath='E:\Data\FDB\Backup\',
+  @moveorcopy='copy',
+  @addtimestamp=1;
+
+END
+
+
+
+
+
+pr_fdb_duration:
+
+
+USE [PCSV_dw]
+GO
+/****** Object:  StoredProcedure [dbo].[pr_fdb_durations]    Script Date: 1/7/2026 3:57:03 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-- =============================================
+-- Author:			Chris Atchley
+-- Create date: 20190517
+-- Description:	Merge/Update FDB hours changes to table, populate durations by week table
+--							Old logic used fixed m-f and sat values from var_base and always took a weekday off for a holiday
+--							Mid-year hours changes were applied to entire year, incorrectly.
+--							With this new logic we can determine hours by week accurately because it hits a daily calendar and uses the historic values for each week (via a range)
+--							Changes in FDB hours are applied going forward, holidays are deducted based on their actual dow, and mon is no longer a proxy for mon-fri, among other benefits
+--	2019-06-24	CBA wrap deletion of cur wk records, reset last known record in an if statement. Old logic was doing the reset no matter what week it was in.
+--	2019-06-24	CBA added reset "update" columns instead of just endFyWk
+--	2019-06-24	CBA used variable @endFyWk in a couple of places where previously hard-coded 209952.
+--								Should not need to change this for about 80 years, but if you do,
+--								update all current records in Master_FDB_Hours to match or you will be out-of-sync.
+-- =============================================
+ALTER PROCEDURE [dbo].[pr_fdb_durations]
+AS
+BEGIN
+	
+	SET NOCOUNT ON;
+
+/* housekeeping */
+	IF OBJECT_ID('tempdb..#temp') IS NOT NULL BEGIN DROP TABLE #temp END;
+	IF OBJECT_ID('tempdb..#temp2') IS NOT NULL BEGIN DROP TABLE #temp2 END;
+	IF OBJECT_ID('tempdb..#temp3') IS NOT NULL BEGIN DROP TABLE #temp3 END;
+	IF OBJECT_ID('tempdb..#hourtypes') IS NOT NULL BEGIN DROP TABLE #hourtypes END;
+	IF OBJECT_ID('tempdb..#daycodes') IS NOT NULL BEGIN DROP TABLE #daycodes END;
+
+/* get last variance FyWk from calendar, used to set end week on old records during merge */	
+	declare	@lastFyWk int
+					,@curFyWk int
+					,@endFyWk int
+					,@lastFy int
+					,@topFyWk int; --added 2019-06-24
+	select @lastFyWk = variance_year*100+variance_week
+				,@lastFy = variance_year - 1
+				from pcsv_dw.dbo.master_calendar_daily where date_key = cast(getdate()-7 as date);
+	select @curFyWk = variance_year*100+variance_week
+				from pcsv_dw.dbo.master_calendar_daily where date_key = cast(getdate() as date);
+	set @endFyWk = 209952; --should not need to change this, if you do, update all current records in Master_FDB_Hours to match or you will be out-of-sync
+	select @topFyWk = max(begFyWk)
+				from pcsv_dw.dbo.Master_FDB_Hours;
+
+/* delete any current week records and reset the last good ones, only comes into play if trying to run this more than once in a week */
+	if @topFyWk = @curFyWk --added 2019-06-24
+	begin
+		delete from pcsv_dw.dbo.Master_FDB_Hours
+			where begFyWk = @curFyWk;
+
+		update t1
+		set endFyWk = @endFyWk
+				,updateDate = Null --added 2019-06-24
+				,updateBy = Null --added 2019-06-24
+				,updateComment = Null --added 2019-06-24
+		from pcsv_dw.dbo.Master_FDB_Hours t1
+			inner join (	select fdbId,fdbHourType,fdbDayCode,endFyWk,row_number() over (partition by fdbId,fdbHourType,fdbDayCode order by endFyWk desc) rowNum
+										from pcsv_dw.dbo.Master_FDB_Hours
+									) t2
+				on t1.fdbId = t2.fdbId
+					and t1.fdbHourType = t2.fdbHourType
+					and t1.fdbDayCode = t2.fdbDayCode
+			where rowNum = 1
+				and t1.endFyWk <> @endFyWk;
+	end
+
+/* create tables */
+	create table #hourtypes(fdb_field_name varchar(25),fdb_hourtype varchar(25));
+	insert into #hourtypes values('FST_MAIL_ARVL','mail_arv'),('BOX_UP','box_up'),('UNIT_TIMES','ofc'),('WIN_SERV_TIMES','win'),('LST_DPTCH_VALUE','last_dispatch');
+
+	create table #daycodes(fdb_doth varchar(25),fdb_daycode int);
+	insert into #daycodes values('Saturday',1),('Sunday',2),('Monday',3),('Tuesday',4),('Wednesday',5),('Thursday',6),('Friday',7);
+
+	create table #temp2 (fdb_id char(7)
+											,fdb_hourtype varchar(25)
+											,fdb_daycode int
+											,day_start time(0)
+											,lunch_start time(0)
+											,lunch_end time(0)
+											,day_end time(0)
+											,addtl_close time(0)
+											,addtl_open time(0)
+											,rowCnt int
+											,beg_fywk int
+											,end_fywk int);
+
+/* transform FDB data and add windowing functions to help determine which pair of times is which later on */
+	SELECT fdb_id
+      ,ht.fdb_hourtype
+      ,dc.fdb_daycode
+      ,cast(stuff(right('0000' + fdb.fdb_start_time, 4),3,0,':') as time(0)) as fdb_start_time --converts to datetime
+      ,cast(stuff(right('0000' + fdb.fdb_end_time, 4),3,0,':') as time(0)) as fdb_end_time --converts to datetime
+			,row_number() over (partition by fdb.fdb_id, fdb.fdb_field_name, fdb.fdb_doth order by fdb.fdb_start_time desc) rownumstart --note this is ordered desc so that earliest start has highest rownum
+			,row_number() over (partition by fdb.fdb_id, fdb.fdb_field_name, fdb.fdb_doth order by fdb.fdb_end_time asc) rownumend
+			,count(*) over (partition by fdb.fdb_id, fdb.fdb_field_name, fdb.fdb_doth) rowcnt
+	into #temp
+  FROM PCSV_dw.dbo.fdb_hours fdb
+		inner join #hourtypes ht
+			on fdb.fdb_field_name = ht.fdb_field_name
+		inner join #daycodes dc
+			on fdb.fdb_doth = dc.fdb_doth
+	order by fdb.fdb_id, ht.fdb_hourtype, dc.fdb_daycode, rownumstart;
+	
+/* seed the distinct records available from FDB data */
+	insert into #temp2 (fdb_id, fdb_hourtype, fdb_daycode, rowCnt, beg_fywk, end_fywk)
+	select distinct fdb_id, fdb_hourtype, fdb_daycode, rowcnt, @curFyWk, @endFyWk
+	from #temp;
+
+/* when row contains the earliest start and there are more than one rows, set day_start and lunch_start */
+	update t2
+	set t2.day_start = t1.fdb_start_time
+			,t2.lunch_start = t1.fdb_end_time
+	from #temp2 t2
+	inner join #temp t1
+	on t2.fdb_id = t1.fdb_id and t2.fdb_hourtype = t1.fdb_hourtype and t2.fdb_daycode = t1.fdb_daycode
+	where t1.rownumstart = t1.rowcnt
+		and t1.rowcnt > 1;
+
+/* when row contains the latest end and there are more than one rows, set lunch_end and day_end */
+	update t2
+	set t2.day_end = t1.fdb_end_time
+			,t2.lunch_end = t1.fdb_start_time
+	from #temp2 t2
+	inner join #temp t1
+	on t2.fdb_id = t1.fdb_id and t2.fdb_hourtype = t1.fdb_hourtype and t2.fdb_daycode = t1.fdb_daycode
+	where t1.rownumend = t1.rowcnt
+		and t1.rowcnt > 1;
+		
+/* when row does not contains the earliest start or latest end and there are more than one rows, it must be the addtl close/open */
+	update t2
+	set t2.addtl_close = t1.fdb_start_time
+			,t2.addtl_open = t1.fdb_end_time
+	from #temp2 t2
+	inner join #temp t1
+	on t2.fdb_id = t1.fdb_id and t2.fdb_hourtype = t1.fdb_hourtype and t2.fdb_daycode = t1.fdb_daycode
+	where t1.rownumstart <> t1.rowcnt and t1.rownumend <> t1.rowcnt
+		and t1.rowcnt > 1;
+
+/* when there is only one row, but start and end times are different, set day_start and day_end */
+	update t2
+	set t2.day_start = t1.fdb_start_time
+		,t2.day_end = t1.fdb_end_time
+	from #temp2 t2
+	inner join #temp t1
+	on t2.fdb_id = t1.fdb_id and t2.fdb_hourtype = t1.fdb_hourtype and t2.fdb_daycode = t1.fdb_daycode
+	where t1.rowcnt = 1
+		and t1.fdb_start_time <> t1.fdb_end_time;
+
+/* when there is only one row and times are the same, it is a cutoff instead of a window, set the day_end like is done in FDB Facility Times screen */
+	update t2
+	set t2.day_end = t1.fdb_end_time
+	from #temp2 t2
+	inner join #temp t1
+	on t2.fdb_id = t1.fdb_id and t2.fdb_hourtype = t1.fdb_hourtype and t2.fdb_daycode = t1.fdb_daycode
+	where t1.rowcnt = 1;
+
+/* get data to be merged */
+	select fdb_id fdbId
+				,fdb_hourtype fdbHourType
+				,fdb_daycode fdbDayCode
+				,day_start dayStart
+				,lunch_start lunchStart
+				,lunch_end lunchEnd
+				,day_end dayEnd
+				,addtl_close addtlClose
+				,addtl_open addtlOpen
+				,case rowCnt
+					when 1 then
+						case when day_Start is Null then 0
+							else rowCnt
+						end
+					else rowCnt
+					end durationCnt	--when only one row and only one time, it isn't a duration so set to 0
+				,beg_fywk begFyWk
+				,end_fywk endFyWk
+				,cast(getdate() as smalldatetime) postedDate
+				,case rowCnt
+					when 1 then
+						case when day_Start is Null then 0
+							else datediff(second,day_start,day_end)
+							end	--when only one row and no start time, it is a cutoff so set the duration to 0
+					when 2 then
+						datediff(second,day_start,lunch_start)+datediff(second,lunch_end,day_end)	--when two rows sum the durations
+					when 3 then
+						datediff(second,day_start,lunch_start)+datediff(second,lunch_end,day_end)-datediff(second,addtl_close,addtl_open) --when three rows then sum two durations and subtract addtl close
+					else 0
+					end durationSeconds
+	into #temp3
+	from #temp2 order by fdb_id, fdb_hourtype, fdb_daycode
+
+/* merge records */
+	merge into pcsv_dw.dbo.Master_FDB_Hours as tgt
+	using #temp3 as src
+		on tgt.fdbId = src.fdbId
+			and tgt.fdbHourType = src.fdbHourType
+			and tgt.fdbDayCode = src.fdbDayCode
+			and coalesce(tgt.dayStart,'00:00:00')			= coalesce(src.dayStart,'00:00:00')
+			and coalesce(tgt.lunchStart,'00:00:00')		= coalesce(src.lunchStart,'00:00:00')
+			and coalesce(tgt.lunchEnd,'00:00:00')			= coalesce(src.lunchEnd,'00:00:00')
+			and coalesce(tgt.dayEnd,'00:00:00')				= coalesce(src.dayEnd,'00:00:00')
+			and coalesce(tgt.addtlClose,'00:00:00')		= coalesce(src.addtlClose,'00:00:00')
+			and coalesce(tgt.addtlOpen,'00:00:00')			= coalesce(src.addtlOpen,'00:00:00')
+			and tgt.endFyWk = @endFyWk
+			and tgt.durationSeconds = src.durationSeconds
+	when not matched then 
+		insert (fdbId
+						,fdbHourType
+						,fdbDayCode
+						,dayStart
+						,lunchStart
+						,lunchEnd
+						,dayEnd
+						,addtlClose
+						,addtlOpen
+						,durationCnt
+						,begFyWk
+						,endFyWk
+						,durationSeconds
+						,postedDate
+						,postedBy
+						)
+								values (src.fdbId
+												,src.fdbHourType
+												,src.fdbDayCode
+												,src.dayStart
+												,src.lunchStart
+												,src.lunchEnd
+												,src.dayEnd
+												,src.addtlClose
+												,src.addtlOpen
+												,src.durationCnt
+												,src.begFyWk
+												,src.endFyWk
+												,src.durationSeconds
+												,cast(getdate() as smalldatetime)
+												,'System')
+	when not matched by source and tgt.endFyWk = @endFyWk then --if not in src i.e. changed or deleted and this is the last record in tgt
+		update set endFyWk = @lastFyWk	--set tgt to close out last week
+							,updateDate = cast(getdate() as smalldatetime)
+							,updateBy = 'System'
+							,updateComment = 'Record closed';
+
+/* update durations table */
+	truncate table pcsv_dw.dbo.Master_FDB_Durations;
+
+	insert into pcsv_dw.dbo.Master_FDB_Durations
+		(fdbId,varFyWk,ofcDurationSeconds,winDurationSeconds)
+
+	select fdbId,varFyWk,coalesce([ofc],0) as ofcDurationSeconds,coalesce([win],0) as winDurationSeconds
+	from (
+					select fdbId,variance_year*100+variance_week varFyWk,fdbHourType, sum(durationSeconds) durationSeconds
+					FROM PCSV_dw.dbo.Master_Calendar_Daily
+					inner join pcsv_dw.dbo.Master_FDB_Hours
+						on day_of_week = fdbDayCode
+					where variance_year*100+variance_week between @lastFy*100+1 and @curFyWk --duration table only needs visible years, could be expanded to included more or hardcoded to begin 201801 or other
+						and observed_holiday_ind = 0
+						and fdbHourType in ('ofc','win')
+						and variance_year*100+variance_week between begFyWk and endFyWk
+					group by fdbId, variance_year, variance_week, fdbHourType
+				) t1
+	pivot (sum(durationSeconds) for fdbHourType in ([ofc],[win])) as t2;
+
+	/* housekeeping */
+	IF OBJECT_ID('tempdb..#temp') IS NOT NULL BEGIN DROP TABLE #temp END;
+	IF OBJECT_ID('tempdb..#temp2') IS NOT NULL BEGIN DROP TABLE #temp2 END;
+	IF OBJECT_ID('tempdb..#temp3') IS NOT NULL BEGIN DROP TABLE #temp3 END;
+	IF OBJECT_ID('tempdb..#hourtypes') IS NOT NULL BEGIN DROP TABLE #hourtypes END;
+	IF OBJECT_ID('tempdb..#daycodes') IS NOT NULL BEGIN DROP TABLE #daycodes END;
+
+END
+
+
+
+
+
+

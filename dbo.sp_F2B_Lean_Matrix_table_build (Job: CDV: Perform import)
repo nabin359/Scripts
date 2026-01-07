@@ -931,3 +931,11 @@ BEGIN
     -- mv fsh files
 	EXEC master..xp_CMDShell 'E:\DATA\eFlash\fmv.bat' 
 END
+
+
+
+
+
+
+
+This procedure is a controlled (locked) full rebuild of F2B Lean Matrix data: it refreshes the core finance-by-week fact table (var_f2b_matrix), computes current/SPLY/plan/earned metrics, then rebuilds all reporting rollups (lead/MPOO/cluster/area/national), and finally runs downstream post-processing.

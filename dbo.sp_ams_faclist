@@ -1,0 +1,128 @@
+USE [PCDV_DW]
+GO
+/****** Object:  StoredProcedure [dbo].[sp_ams_faclist]    Script Date: 1/7/2026 12:29:15 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-- =============================================
+-- Author:		DRUIZ
+-- Create date: 07182011
+-- Description:	Copy current two weeks ams for rural and master_faclist for mpoo.
+-- History
+--  GDW 121714 -- adjust AMS query from F4 server to be more efficient and prevent timeouts.
+--  GDW 012715 -- Allow MPOO 'N' updates to var_base for CDV and RDV
+--  2019-01-24; wildgk.  Abstract F4 server name for ams/faclist data pull and populate.
+--  2020-08-26  CBA alter var_base updates to utilize new views as part of 2020 USPS Restructure (marker USPS2020)
+--  2023-01-31  Add Update for new Parcel Projection Factor.
+--  2023-02-06; KBZKG0. Moved Production Factors to end of pcdv_dw.dbo.sp_loadVarWeekly Procedure.
+-- =============================================
+ALTER PROCEDURE [dbo].[sp_ams_faclist]
+AS
+BEGIN
+	SET NOCOUNT ON;
+
+--purge master_faclist
+truncate table master_faclist
+declare @curfy int
+set @curfy = (select top 1 ams_fy from import_ams_new order by ams_fy desc)
+declare @crfywk int
+set @crfywk = (select top 1 (ams_fy*100)+ams_wk from import_ams_new with(nolock) order by ams_fy desc, ams_wk desc)
+select @crfywk crfywk, @curfy curfy
+
+DECLARE 
+@srv_cat_ind BIT,
+@csv_srv_name VARCHAR(255),
+@SQLCmd VARCHAR(MAX) = '';
+
+SELECT @srv_cat_ind = srv_cat_ind 
+FROM var_servers.dbo.var_servers 
+WHERE srv_name = @@SERVERNAME;
+
+SELECT @csv_srv_name = srv_name
+FROM var_servers.dbo.var_servers
+WHERE srv_active_ind = 1 
+AND srv_db_ind = 1 
+AND srv_db_app = 'CSV' 
+AND srv_cat_ind = @srv_cat_ind;
+
+SET @SQLCmd = '
+Insert into import_ams_new
+(ams_del_zip,ams_rte_type,ams_del_rte_num,ams_del_pha_ind,ams_del_aux_ind,ams_del_rte_mode,ams_del_bun_type,ams_fin_nbr_lead,ams_drop,ams_fin_nbr_station,ams_fdb_key,ams_sch_zip,ams_sch_rte,ams_sch_pha_ind,ams_sch_aux_ind,ams_sch_rte_mode,ams_sch_bun_type,ams_sch_zip_fin,ams_act_res_curb,ams_act_res_ndcbu,ams_act_res_central,ams_act_res_other,ams_act_res_fac_box,ams_act_res_con_box,ams_act_res_det_box,ams_act_res_npu,ams_act_res_future_2,ams_act_res_future_3,ams_act_res_future_4,ams_act_res_future_5,ams_act_res_csb,ams_act_res_rb,ams_act_res_cb,ams_act_res_ob,ams_act_bus_curb,ams_act_bus_ndcbu,ams_act_bus_central,ams_act_bus_other,ams_act_bus_fac_box,ams_act_bus_con_box,ams_act_bus_det_box,ams_act_bus_npu,ams_act_bus_future_2,ams_act_bus_future_3,ams_act_bus_future_4,ams_act_bus_future_5,ams_act_bus_csb,ams_act_bus_rb,ams_act_bus_cb,ams_act_bus_ob,ams_act_bus_gd,ams_pos_res_curb,ams_pos_res_ndcbu,ams_pos_res_central,ams_pos_res_other,ams_pos_res_fac_box,ams_pos_res_con_box,ams_pos_res_det_box,ams_pos_res_npu,ams_pos_res_future_2,ams_pos_res_future_3,ams_pos_res_future_4,ams_pos_res_future_5,ams_pos_res_csb,ams_pos_res_rb,ams_pos_res_cb,ams_pos_res_ob,ams_pos_bus_curb,ams_pos_bus_ndcbu,ams_pos_bus_central,ams_pos_bus_other,ams_pos_bus_fac_box,ams_pos_bus_con_box,ams_pos_bus_det_box,ams_pos_bus_npu,ams_pos_bus_future_2,ams_pos_bus_future_3,ams_pos_bus_future_4,ams_pos_bus_future_5,ams_pos_bus_csb,ams_pos_bus_rb,ams_pos_bus_cb,ams_pos_bus_ob,ams_pos_bus_gd,ams_act_rb_mx,ams_act_br_mx,ams_no_stat,ams_cds_no_stat,ams_del_vacant,ams_sea_del,ams_add_t_count,ams_add_h_count,ams_add_c_count,ams_filler,ams_area_code,ams_district_code,ams_per_yy_date,ams_per_mm_date,ams_per_dd_date,ams_fy,ams_wk,ams_act_tot,ams_pos_tot)
+select ams_del_zip,ams_rte_type,ams_del_rte_num,ams_del_pha_ind,ams_del_aux_ind,ams_del_rte_mode,ams_del_bun_type,ams_fin_nbr_lead,ams_drop,ams_fin_nbr_station,ams_fdb_key,ams_sch_zip,ams_sch_rte,ams_sch_pha_ind,ams_sch_aux_ind,ams_sch_rte_mode,ams_sch_bun_type,ams_sch_zip_fin,ams_act_res_curb,ams_act_res_ndcbu,ams_act_res_central,ams_act_res_other,ams_act_res_fac_box,ams_act_res_con_box,ams_act_res_det_box,ams_act_res_npu,ams_act_res_future_2,ams_act_res_future_3,ams_act_res_future_4,ams_act_res_future_5,ams_act_res_csb,ams_act_res_rb,ams_act_res_cb,ams_act_res_ob,ams_act_bus_curb,ams_act_bus_ndcbu,ams_act_bus_central,ams_act_bus_other,ams_act_bus_fac_box,ams_act_bus_con_box,ams_act_bus_det_box,ams_act_bus_npu,ams_act_bus_future_2,ams_act_bus_future_3,ams_act_bus_future_4,ams_act_bus_future_5,ams_act_bus_csb,ams_act_bus_rb,ams_act_bus_cb,ams_act_bus_ob,ams_act_bus_gd,ams_pos_res_curb,ams_pos_res_ndcbu,ams_pos_res_central,ams_pos_res_other,ams_pos_res_fac_box,ams_pos_res_con_box,ams_pos_res_det_box,ams_pos_res_npu,ams_pos_res_future_2,ams_pos_res_future_3,ams_pos_res_future_4,ams_pos_res_future_5,ams_pos_res_csb,ams_pos_res_rb,ams_pos_res_cb,ams_pos_res_ob,ams_pos_bus_curb,ams_pos_bus_ndcbu,ams_pos_bus_central,ams_pos_bus_other,ams_pos_bus_fac_box,ams_pos_bus_con_box,ams_pos_bus_det_box,ams_pos_bus_npu,ams_pos_bus_future_2,ams_pos_bus_future_3,ams_pos_bus_future_4,ams_pos_bus_future_5,ams_pos_bus_csb,ams_pos_bus_rb,ams_pos_bus_cb,ams_pos_bus_ob,ams_pos_bus_gd,ams_act_rb_mx,ams_act_br_mx,ams_no_stat,ams_cds_no_stat,ams_del_vacant,ams_sea_del,ams_add_t_count,ams_add_h_count,ams_add_c_count,ams_filler,ams_area_code,ams_district_code,ams_per_yy_date,ams_per_mm_date,ams_per_dd_date,ams_fy,ams_wk,ams_act_tot,ams_pos_tot
+from ' + @csv_srv_name + '.pcsv_dw.dbo.import_ams_new with(nolock) 
+where ams_fy >= ' + CAST(@curfy AS CHAR(4)) + '
+and (ams_fy*100)+ams_wk > ' + CAST(@crfywk AS CHAR(6)) + '
+and ams_rte_type=''r'';';
+
+EXEC(@SQLCmd);
+
+PRINT 'Ams data updated';
+
+
+--import master_faclist
+SET @SQLCmd = '
+Insert into master_faclist
+(fac_area, fac_area_name, fac_cluster, fac_cluster_name, fac_mpoo, fac_lead_fin_nbr, fac_fin_nbr, fac_office, fac_cag, fac_zip, fac_update, fac_mpoo_name)
+select 
+      fac_area
+    , left(fac_area_name,25)
+    , fac_cluster
+    , left(fac_cluster_name,25)
+    , fac_mpoo
+    , fac_lead_fin_nbr
+    , fac_fin_nbr
+    , left(fac_office,40)
+    , fac_cag
+    , fac_zip
+    , fac_update
+    , fac_mpoo_name
+from ' + @csv_srv_name + '.pcsv_dw.dbo.master_faclist;';
+
+EXEC(@SQLCmd);
+
+PRINT 'Master Faclist data copied';
+
+--cdv update
+--/* new USPS2020 need to update var_base_orgs instead of var_base
+update dbo.var_base_orgs
+set b_fin_name = fac_office
+from dbo.master_faclist
+where b_fin_nbr = fac_fin_nbr and b_fin_name <>fac_office and b_mpoo <>'x';
+-- end new USPS2020 */
+
+--/* new USPS2020 need to update var_base_orgs instead of var_base
+update var_base_orgs
+set b_mpoo=fac_mpoo
+from master_faclist with(nolock)
+where b_fin_nbr=fac_fin_nbr and b_cluster<>'000' and b_mpoo <>'x' and b_mpoo<>fac_mpoo and fac_mpoo<>'x';
+-- end new USPS2020 */
+
+update var_base set b_cag=fac_cag from master_faclist with(nolock)
+--where b_fin_nbr=fac_fin_nbr and b_cluster<>'000' and b_mpoo <>'x' and fac_mpoo <>'n' and fac_mpoo<>'x' and b_cag<>fac_cag
+where b_fin_nbr=fac_fin_nbr and b_cluster<>'000' and b_mpoo <>'x' and fac_mpoo<>'x' and b_cag<>fac_cag
+PRINT 'CDV var_base updated' 
+
+--rdv update
+
+--/* new USPS2020 need to update var_base_orgs instead of var_base
+update RDV.dbo.var_base_orgs
+set b_fin_name = fac_office
+from dbo.master_faclist
+where b_fin_nbr = fac_fin_nbr and b_fin_name <>fac_office and b_mpoo <>'x';
+-- end new USPS2020 */
+
+--/* new USPS2020 need to update var_base_orgs instead of var_base
+update RDV.dbo.var_base_orgs
+set b_mpoo=fac_mpoo
+from master_faclist with(nolock)
+where b_fin_nbr=fac_fin_nbr and b_cluster<>'000' and b_mpoo <>'x' and b_mpoo<>fac_mpoo and fac_mpoo<>'x';
+-- end new USPS2020 */
+
+
+update RDV.dbo.var_base set b_cag=fac_cag from master_faclist with(nolock)
+--where b_fin_nbr=fac_fin_nbr and b_cluster<>'000' and b_mpoo <>'x' and fac_mpoo <>'n' and fac_mpoo<>'x' and b_cag<>fac_cag
+where b_fin_nbr=fac_fin_nbr and b_cluster<>'000' and b_mpoo <>'x' and fac_mpoo<>'x' and b_cag<>fac_cag
+PRINT 'RDV var_base updated' 
+
+END

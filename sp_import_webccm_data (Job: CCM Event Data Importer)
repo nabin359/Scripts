@@ -111,3 +111,8 @@ AS
 End
 ELSE 
 		PRINT 'File Not Found'
+
+
+
+
+Inbound file (webccm.dat) → BULK INSERT into temp staging (#webccm_import) → transform date strings → insert into final table (pvar_dw.dbo.ccm_events) → archive file → delete inbound file.

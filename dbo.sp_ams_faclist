@@ -126,3 +126,84 @@ where b_fin_nbr=fac_fin_nbr and b_cluster<>'000' and b_mpoo <>'x' and fac_mpoo<>
 PRINT 'RDV var_base updated' 
 
 END
+
+
+
+
+Explaination: 
+
+Data flow summary for dbo.sp_ams_faclist (end-to-end)
+
+Goal: Pull the latest AMS (rural) data and the latest facility list from the upstream “CSV” SQL Server, then use the refreshed facility list to update CDV/RDV base tables.
+
+1) Identify the upstream source server
+
+Procedure reads var_servers.dbo.var_servers to determine the correct active “CSV” server for this environment/category.
+
+That server name is stored in @csv_srv_name.
+
+Result: All upstream pulls come from:
+[@csv_srv_name].pcsv_dw.dbo...
+
+2) AMS data flow (incremental copy)
+
+Source: [@csv_srv_name].pcsv_dw.dbo.import_ams_new (remote)
+Target: PCDV_DW.dbo.import_ams_new (local)
+
+Logic: Only inserts newer FY/WK rows than what your local table already has, and only rural routes (ams_rte_type = 'r').
+
+Flow:
+Remote AMS staging → (filter to newer FY/WK + rural only) → Local AMS staging
+
+3) Facility list flow (full refresh copy)
+
+Source: [@csv_srv_name].pcsv_dw.dbo.master_faclist (remote)
+Target: PCDV_DW.dbo.master_faclist (local)
+
+Logic:
+
+First TRUNCATE local master_faclist
+
+Then reload the entire facility list from the remote server (full refresh)
+
+Flow:
+Remote master_faclist → (truncate + full copy) → Local master_faclist
+
+4) CDV/RDV base table updates (propagation from refreshed facility list)
+
+After local master_faclist is refreshed, it becomes the authoritative lookup for updating base attributes.
+
+CDV updates
+
+PCDV_DW.dbo.var_base_orgs
+
+updates b_fin_name from fac_office
+
+updates b_mpoo from fac_mpoo
+
+PCDV_DW.dbo.var_base
+
+updates b_cag from fac_cag
+
+RDV updates
+
+RDV.dbo.var_base_orgs
+
+updates b_fin_name and b_mpoo
+
+RDV.dbo.var_base
+
+updates b_cag
+
+Flow:
+Local master_faclist → (join on finance number) → update CDV/RDV base tables
+
+One-line diagram
+
+Remote CSV server (pcsv_dw)
+→ (incremental) local import_ams_new
+→ (full refresh) local master_faclist
+→ (lookup-driven updates) CDV/RDV var_base_orgs + var_base
+
+
+

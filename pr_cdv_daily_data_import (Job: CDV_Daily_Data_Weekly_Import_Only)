@@ -1,0 +1,625 @@
+USE [PCSV_dw]
+GO
+/****** Object:  StoredProcedure [dbo].[pr_cdv_daily_data_import]    Script Date: 1/7/2026 4:02:17 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-- =============================================
+-- Author: wildgk/CBA
+-- Create date: 2020-01-30
+-- Description: Pulls and stores/updates the F2 cdv server cdv_daily_data table to support IVES/MasterMonday
+-- History
+--  2020-01-31; CBA/wildgk.  Initial version.
+--  2020-03-10; wildgk.
+--      Add new oper groups; hitting new consumer apps/linking tables.
+--      Tables and data for CDV activity here due to hitting of two very large required tables which are on F4 server (TACS/PTS).
+-- =============================================
+ALTER procedure [dbo].[pr_cdv_daily_data_import]
+as
+begin
+
+begin try
+
+if object_id('tempdb..#Working') is not null begin drop table #Working end;
+
+if object_id('tempdb..#Working2') is not null begin drop table #Working2 end;
+
+if object_id('tempdb..#Working3') is not null begin drop table #Working3 end;
+
+if object_id('tempdb..#Unpivoted') is not null begin drop table #Unpivoted end;
+
+if object_id('tempdb..#Pivoted') is not null begin drop table #Pivoted end;
+
+if object_id('tempdb..#aau_sun') is not null begin drop table #aau_sun; end
+
+if object_id('tempdb..#tmpOperGroups') is not null begin drop table #tmpOperGroups; end
+
+SET NOCOUNT ON;
+
+/*** Get in scope week ***/
+DECLARE 
+@curfywk int,
+@annDelDays int,
+@sqlCmd varchar(max),
+@curPeriodSqlCmd nvarchar(255),
+@cdvServerName varchar(255);
+
+--Get cdvServerName
+execute var_servers.dbo.sp_get_db_server_name 'cdv', @serverName = @cdvServerName output;
+
+--Get current FY Week from the CDV server.
+set @curPeriodSqlCmd = N'SELECT @ann_current_per = ann_current_period from ' + @cdvServerName + '.pcdv_dw.dbo.var_annual with (nolock) where ann_id = 1;';
+execute sp_executesql @curPeriodSqlCmd, N'@ann_current_per int OUTPUT', @ann_current_per = @curfywk output;
+
+select @annDelDays = max(variance_year_total_del_days)
+from pcsv_dw.dbo.master_calendar_daily with (nolock)
+where variance_full_week = @curfywk;
+
+create table #Working (
+     FY_Week int
+    ,fy int
+    ,wk int
+    ,Finance char(6)
+    ,Office varchar(255)
+    ,Area char(2)
+    ,Area_Name varchar(255)
+    ,Cluster char(3)
+    ,Cluster_Name varchar(255)
+    ,MPOO varchar(255)
+    ,Delivery_Date date
+    ,wkday int
+    ,delivery_day_ind bit
+    ,b_oth_dps_ind bit
+    ,b_prod_dps_pct decimal(18,4)
+    ,b_pct_standard decimal(18,4)
+    ,b_oth_22 decimal(18,4)
+    ,b_oth_23 decimal(18,4)
+    ,b_oth_27 decimal(18,4)
+    ,w_cty_rte decimal(18,4)
+    ,b_collection_unit_ind bit
+    ,w_hrs_fot_w_brk decimal(18,4)
+    ,ldc_22_fact decimal(18,4)
+    ,ldc_23_sun_fact decimal(18,4));
+
+set @sqlCmd = '
+insert into #Working
+SELECT 
+    variance_full_week FY_Week
+    ,variance_year fy
+    ,variance_week wk
+    ,b_fin_nbr Finance
+    ,b_fin_name Office
+    ,b_area Area
+    ,b_area_name Area_Name
+    ,b_cluster Cluster
+    ,b_cluster_name Cluster_Name
+    ,b_mpoo MPOO
+    ,date_key Delivery_Date
+    ,day_of_week wkday
+    ,delivery_day_ind
+    ,ISNULL(b_oth_dps_ind, 0) b_oth_dps_ind
+    ,ISNULL(b_prod_dps_pct, 0) b_prod_dps_pct
+    ,ISNULL(b_pct_standard, 0) b_pct_standard
+    ,ISNULL(b_oth_22, 0) b_oth_22
+    ,ISNULL(b_oth_23, 0) b_oth_23
+    ,ISNULL(b_oth_27, 0) b_oth_27    
+    ,cast(0 as decimal(18,4)) w_cty_rte
+    ,b_collection_unit_ind
+    ,cast(0 as decimal(18,4)) w_hrs_fot_w_brk
+    ,ldc_22_fact
+    ,ldc_23_sun_fact
+FROM pcsv_dw.dbo.Master_Calendar_daily
+CROSS JOIN ' + @cdvServerName + '.pcdv_dw.dbo.var_base
+CROSS JOIN ' + @cdvServerName + '.pcdv_delpvar.dbo.avar_cdv_prod
+WHERE variance_full_week = ' + cast(@curfywk as char(6)) + '
+AND b_cdv_ind = 1
+AND b_mpoo <> ''X''
+GROUP BY 
+    variance_full_week
+    ,variance_year
+    ,variance_week
+    ,date_key
+    ,delivery_day_ind
+    ,b_fin_nbr
+    ,day_of_week
+    ,b_oth_dps_ind
+    ,b_prod_dps_pct
+    ,b_pct_standard
+    ,b_oth_22
+    ,b_oth_23
+    ,b_oth_27
+    ,ldc_23_sun_fact
+    ,b_collection_unit_ind
+    ,ldc_22_fact
+    ,b_fin_name
+    ,b_area
+    ,b_area_name
+    ,b_cluster
+    ,b_cluster_name
+    ,b_mpoo
+ORDER BY 
+    b_fin_nbr
+    ,FY_Week
+    ,Delivery_Date;';
+
+
+exec(@sqlCmd);
+
+
+--The FOT is on var_weekly.  Can and does vary by week.
+set @sqlCmd = '
+UPDATE t2
+SET t2.w_hrs_fot_w_brk = t1.w_hrs_fot_w_brk,
+    t2.w_cty_rte = t1.w_cty_rte
+FROM #Working t2
+    INNER JOIN ' + @cdvServerName + '.pcdv_dw.dbo.var_weekly t1
+        ON t1.w_fin_nbr = t2.Finance
+        and t2.fy_week = t1.w_fy * 100 + t1.w_wk;';
+
+exec(@sqlCmd);
+
+create table #Working2 (
+    FY_Week int
+    ,fy int
+    ,wk int
+    ,Finance char(6)
+    ,Office varchar(255)
+    ,Area char(2)
+    ,Area_Name varchar(255)
+    ,Cluster char(3)
+    ,Cluster_Name varchar(255)
+    ,MPOO varchar(255)
+    ,Delivery_Date date
+    ,wkday int
+    ,w_del_days int
+    ,b_oth_dps_ind bit
+    ,b_prod_dps_pct decimal(18,6)
+    ,b_pct_standard decimal(18,6)
+    ,b_oth_22 decimal(18,6)
+    ,b_collection_unit_ind bit
+    ,w_hrs_fot_w_brk decimal(18,6)
+    ,ldc_22_fact decimal(18,6)
+    ,b_oth_23 decimal(18,6)
+    ,ldc_23_sun_fact decimal(18,6)
+    ,w_cty_cupd decimal(18,6)
+    ,w_sei decimal(18,6)
+    ,b_oth_27 decimal(18,6)
+    ,w_cty_rte int
+    ,w_vol_cas_ltr int
+    ,w_vol_dps_ltr int
+    ,w_vol_cas_flt int
+    ,w_vol_total_delivered int
+    ,L21_hours decimal(18,6)
+    ,L22_hours decimal(18,6)
+    ,L23_hours decimal(18,6)
+    ,w_23_sun_pcs int
+    ,L26_hours decimal(18,6)
+    ,L27_hours decimal(18,6)
+    ,L28_hours decimal(18,6)
+    ,L29_hours decimal(18,6));
+
+set @sqlCmd = '
+insert into #Working2
+SELECT 
+    FY_Week
+    ,t1.fy
+    ,wk
+    ,t1.Finance
+    ,t1.Office
+    ,t1.Area
+    ,t1.Area_Name
+    ,t1.Cluster
+    ,t1.Cluster_Name
+    ,t1.MPOO
+    ,Delivery_Date
+    ,wkday
+    ,delivery_day_ind w_del_days
+    ,b_oth_dps_ind
+    ,b_prod_dps_pct
+    ,b_pct_standard
+    ,b_oth_22
+    ,b_collection_unit_ind
+    ,t2.w_hrs_fot_w_brk
+    ,ldc_22_fact
+    ,b_oth_23
+    ,ldc_23_sun_fact
+    ,w_cty_cupd/w_del_days w_cty_cupd
+    ,w_sei
+    ,b_oth_27
+    ,t1.w_cty_rte
+    ,CAST(0 AS INT) w_vol_cas_ltr
+    ,CAST(0 AS INT) w_vol_dps_ltr
+    ,CAST(0 AS INT) w_vol_cas_flt
+    ,CAST(0 AS INT) w_vol_total_delivered
+    ,SUM(isnull(L21_hours, 0)) L21_hours
+    ,SUM(isnull(L22_hours, 0)) L22_hours
+    ,SUM(isnull(L23_hours, 0)) L23_hours
+    ,cast(0 as int) w_23_sun_pcs
+    ,SUM(isnull(L26_hours, 0)) L26_hours         
+    ,SUM(isnull(L27_hours, 0)) L27_hours         
+    ,SUM(isnull(L28_hours, 0)) L28_hours 
+    ,SUM(isnull(L29_hours, 0)) L29_hours
+FROM #Working t1
+    LEFT JOIN ' + @cdvServerName + '.pcdv_dw.dbo.var_weekly t2
+        ON t2.w_fy * 100 + t2.w_wk = t1.FY_Week
+        AND t2.w_fin_nbr = t1.Finance
+    LEFT JOIN (SELECT 
+                tacs_fin
+                ,tacs_fy
+                ,tacs_wk
+                ,tacs_ppday
+                ,SUM(tacs_hrs) tacs_hrs
+                ,SUM(tacs_ot) tacs_ot
+                ,CASE WHEN LEFT(tacs_ldc, 2) = ''21'' THEN SUM(tacs_hrs) ELSE 0 END L21_hours
+                ,CASE WHEN LEFT(tacs_ldc, 2) = ''22'' THEN SUM(tacs_hrs) ELSE 0 END L22_hours
+                ,CASE WHEN LEFT(tacs_ldc, 2) = ''23'' THEN SUM(tacs_hrs) ELSE 0 END L23_hours
+                ,CASE WHEN LEFT(tacs_ldc, 2) = ''26'' THEN SUM(tacs_hrs) ELSE 0 END L26_hours
+                ,CASE WHEN LEFT(tacs_ldc, 2) = ''27'' THEN SUM(tacs_hrs) ELSE 0 END L27_hours
+                ,CASE WHEN LEFT(tacs_ldc, 2) = ''28'' THEN SUM(tacs_hrs) ELSE 0 END L28_hours
+                ,CASE WHEN LEFT(tacs_ldc, 2) = ''29'' THEN SUM(tacs_hrs) ELSE 0 END L29_hours
+               FROM pcsv_dw.dbo.csv_tacs_daily with (nolock)
+               WHERE tacs_ldc IN (''2100'',''2200'',''2300'',''2600'',''2700'',''2800'',''2900'')
+               GROUP BY tacs_fin, tacs_fy, tacs_wk, tacs_ppday, tacs_ldc) t3
+        ON t3.tacs_fin = t1.Finance
+        AND t3.tacs_fy = t1.fy
+        AND t3.tacs_wk = t1.wk
+        AND t3.tacs_ppday = t1.wkday
+GROUP BY 
+    FY_Week
+    ,t1.fy
+    ,wk
+    ,t1.Finance
+    ,t1.Office
+    ,t1.Area
+    ,t1.Area_Name
+    ,t1.Cluster
+    ,t1.Cluster_Name
+    ,t1.MPOO
+    ,Delivery_Date
+    ,wkday
+    ,delivery_day_ind
+    ,b_oth_dps_ind
+    ,b_prod_dps_pct
+    ,b_pct_standard
+    ,b_oth_22
+    ,b_collection_unit_ind
+    ,t2.w_hrs_fot_w_brk
+    ,ldc_22_fact
+    ,w_cty_cupd
+    ,w_del_days
+    ,w_sei
+    ,b_oth_23
+    ,w_23_sun_pcs
+    ,ldc_23_sun_fact
+    ,b_oth_27
+    ,t1.w_cty_rte;';
+
+exec(@sqlCmd);
+
+/*** Add 21/22 volume to result set ***/
+set @sqlCmd = '
+UPDATE t2
+SET  
+    t2.w_vol_cas_ltr = t1.total_cased_letters
+    ,t2.w_vol_dps_ltr = t1.total_dps_mail_daily
+    ,t2.w_vol_cas_flt = t1.total_cased_flats
+    ,t2.w_vol_total_delivered = t1.total_pieces_delivered
+FROM #Working2 t2
+    INNER JOIN ' + @cdvServerName + '.pcdv_dw.dbo.master_monday_edw_data t1
+        ON t1.data_date = t2.Delivery_Date
+        AND t1.finance = t2.Finance
+        AND t1.FY = t2.FY
+        AND t1.week = t2.WK;';
+
+exec(@sqlCmd);
+
+if object_id('tempdb..#aau_sun') is not null begin
+    drop table #aau_sun;
+end
+
+create table #aau_sun (pts_fin_nbr char(6), pts_eventdate date, scan_cnt int);
+
+SET @SQLCmd = '
+INSERT into #aau_sun (pts_fin_nbr, pts_eventdate, scan_cnt)
+SELECT pts_fin_nbr, cast(pts_eventdate as date) pts_eventdate,SUM(pts_distcount) sun_cnt 
+from PCSV_dw.dbo.CSV_PTS_Daily with(nolock),
+    PCSV_dw.dbo.var_base with(nolock)
+where pts_fin_nbr = b_fin_nbr 
+and b_csv_ind = 1 
+and b_mpoo <> ''x'' 
+and b_48_sun_dly_pcs > 0 
+and b_48_sun_spokes > 0 
+and pts_fy * 100 + pts_wk = ' + CAST(@curfywk AS CHAR(6)) + '
+and pts_day = 1
+and datepart(mm,pts_eventdate) <> 12
+group by pts_fin_nbr,pts_eventdate
+union
+SELECT pts_fin_nbr, cast(pts_eventdate as date),SUM(pts_distcount) sun_cnt 
+from PCSV_dw.dbo.CSV_PTS_Daily with(nolock),
+    PCSV_dw.dbo.var_base with(nolock)
+where pts_fin_nbr = b_fin_nbr 
+and b_csv_ind = 1 
+and b_mpoo <> ''x'' 
+and b_48_sun_dly_pcs > 0 
+and b_48_sun_spokes > 0 
+and pts_fy * 100 + pts_wk = ' + CAST(@curfywk AS CHAR(6)) + '
+and pts_eventdate in (select eve_date from pcsv_DelpVar.dbo.avar_events with(nolock) where eve_usps_holiday_ind = 1) 
+and datepart(mm,pts_eventdate) <> 12
+group by pts_fin_nbr,pts_eventdate
+union
+SELECT pts_fin_nbr, cast(pts_eventdate as date),SUM(pts_distcount) sun_cnt 
+from PCSV_dw.dbo.CSV_PTS_Daily with(nolock),
+    ' + @cdvServerName + '.PCDV_DW.dbo.var_base with(nolock)
+where pts_fin_nbr = b_fin_nbr 
+and b_cdv_ind = 1 
+and b_mpoo <> ''x'' 
+and pts_fy * 100 + pts_wk = ' + CAST(@curfywk AS CHAR(6)) + '
+and pts_day=1 
+and datepart(mm,pts_eventdate) = 12
+group by pts_fin_nbr,pts_eventdate
+union
+SELECT pts_fin_nbr, cast(pts_eventdate as date),SUM(pts_distcount) sun_cnt 
+from PCSV_dw.dbo.CSV_PTS_Daily with(nolock),
+    ' + @cdvServerName + '.PCDV_DW.dbo.var_base with(nolock)
+where pts_fin_nbr = b_fin_nbr 
+and b_cdv_ind = 1 
+and b_mpoo <> ''x'' 
+and pts_fy * 100 + pts_wk = ' + CAST(@curfywk AS CHAR(6)) + '
+and pts_eventdate in (select eve_date from pcsv_DelpVar.dbo.avar_events with(nolock) where eve_usps_holiday_ind = 1) 
+and datepart(mm,pts_eventdate) = 12
+group by pts_fin_nbr,pts_eventdate;';
+
+exec(@sqlCmd);
+
+update #Working2
+set w_23_sun_pcs = scan_cnt 
+from #aau_sun
+where finance = pts_fin_nbr 
+and delivery_date = pts_eventdate;
+
+/*** Apply calcs to get earned values ***/
+SELECT 
+    FY_Week
+    ,Finance
+    ,Office
+    ,Area
+    ,Area_Name
+    ,Cluster
+    ,Cluster_Name
+    ,MPOO
+    ,Delivery_Date
+    ,CAST(w_vol_cas_ltr AS DECIMAL (18,6)) L21_ltr_vol
+    ,CAST(w_vol_dps_ltr AS DECIMAL (18,6)) L21_dps_vol
+    ,CAST(w_vol_cas_flt AS DECIMAL (18,6)) L21_flt_vol
+    ,CAST(w_vol_cas_ltr + w_vol_cas_flt AS DECIMAL (18,6)) L21_all_vol
+        
+    ,cast(sum(w_hrs_fot_w_brk) * w_del_days as decimal(18,6)) L21_fot_act
+    ,cast(sum(w_hrs_fot_w_brk) * w_del_days as decimal(18,6)) L21_fot_ern
+
+    ,CAST(ISNULL(L21_hours, 0) AS DECIMAL (18,6)) L21_all_act
+    ,CAST(CASE WHEN w_vol_cas_ltr = 0 OR w_vol_cas_flt = 0 THEN 0
+           ELSE
+               (CASE WHEN ISNULL(b_oth_dps_ind, 0) = 1 OR w_vol_dps_ltr = 0 THEN
+                       ((((((((((w_vol_cas_ltr)/18) + ((w_vol_cas_flt)/8) + ((((w_vol_cas_ltr)) + ((w_vol_cas_flt)))/70))/60)) * (b_pct_standard)) + (w_hrs_fot_w_brk * w_del_days)))))
+                   ELSE ((((((CASE WHEN w_vol_cas_ltr < (((w_vol_cas_ltr + w_vol_dps_ltr) * (1 - b_prod_dps_pct))) 
+               THEN (w_vol_cas_ltr/18) ELSE (((w_vol_cas_ltr + w_vol_dps_ltr) * (1 - b_prod_dps_pct))/18) END + (w_vol_cas_flt/8) 
+               + (((CASE WHEN w_vol_cas_ltr < (((w_vol_cas_ltr + w_vol_dps_ltr) * (1 - b_prod_dps_pct))) THEN (w_vol_cas_ltr) 
+           ELSE (((w_vol_cas_ltr + w_vol_dps_ltr) * (1 - b_prod_dps_pct))) END + (w_vol_cas_flt))/70)))/60) 
+           * (b_pct_standard) + (w_hrs_fot_w_brk * w_del_days))))) END) END AS DECIMAL (18,6)) L21_all_ern       
+    
+    ,CAST(w_vol_total_delivered AS DECIMAL (18,6)) L22_all_vol
+    ,CAST(ISNULL(L22_hours, 0) AS DECIMAL (18,6)) L22_all_act
+    ,CAST(CASE WHEN w_cty_cupd = 0 OR w_sei = 0 OR w_del_days = 0 THEN 0
+           ELSE  (((w_cty_cupd)/(w_sei)) + ((b_oth_22) * w_del_days))
+       END * ldc_22_fact AS DECIMAL (18,6)) L22_all_ern    
+    
+    ,CAST(w_23_sun_pcs as decimal(18,6)) L23_all_vol
+    ,CAST(ISNULL(L23_hours, 0) AS DECIMAL (18,6)) L23_all_act    
+    
+    
+    ,cast(CASE WHEN L23_hours < ISNULL(b_oth_23 * SUM(w_del_days), 0) + (w_23_sun_pcs/ldc_23_sun_fact) THEN L23_hours 
+        ELSE ISNULL(b_oth_23 * SUM(w_del_days), 0) + (w_23_sun_pcs/ldc_23_sun_fact) 
+    END as decimal(18,6)) L23_all_ern
+
+    ,CAST(ISNULL(L26_hours, 0) AS DECIMAL (18,6)) L26_all_act
+    ,cast(CASE WHEN b_collection_unit_ind = 1 THEN 0 
+        ELSE ((CAST((w_cty_rte * 4) AS decimal(15, 5))/@annDelDays) * w_del_days) 
+    END as decimal(18,6)) L26_all_ern
+
+
+    ,CAST(ISNULL(L27_hours, 0) AS DECIMAL (18,6)) L27_all_act
+    ,cast(CASE WHEN L27_hours < ISNULL(b_oth_27 * SUM(w_del_days), 0) THEN L27_hours 
+        ELSE ISNULL(b_oth_27 * SUM(w_del_days), 0) 
+    END as decimal(18,6)) L27_all_ern
+
+    ,CAST(ISNULL(L28_hours, 0) AS DECIMAL (18,6)) L28_all_act
+
+    ,CAST(ISNULL(L29_hours, 0) AS DECIMAL (18,6)) L29_all_act
+into #Working3
+from #Working2
+group by
+    FY_Week
+    ,Finance
+    ,Office
+    ,Area
+    ,Area_Name
+    ,Cluster
+    ,Cluster_Name
+    ,MPOO
+    ,Delivery_Date
+    ,w_vol_cas_ltr
+    ,w_vol_cas_flt
+    ,L21_hours
+    ,L22_hours
+    ,L23_hours
+    ,L26_hours
+    ,L27_hours
+    ,L28_hours
+    ,L29_hours
+    ,b_oth_dps_ind
+    ,w_vol_dps_ltr
+    ,b_pct_standard
+    ,w_hrs_fot_w_brk
+    ,w_del_days
+    ,w_vol_dps_ltr
+    ,w_vol_total_delivered
+    ,b_prod_dps_pct
+    ,w_vol_dps_ltr
+    ,b_prod_dps_pct
+    ,w_vol_dps_ltr
+    ,b_prod_dps_pct
+    ,w_vol_dps_ltr
+    ,b_prod_dps_pct
+    ,b_pct_standard
+    ,w_hrs_fot_w_brk
+    ,w_del_days
+    ,w_cty_cupd
+    ,ldc_22_fact
+    ,w_sei
+    ,b_oth_22
+    ,b_oth_23
+    ,w_23_sun_pcs
+    ,ldc_23_sun_fact
+    ,b_collection_unit_ind
+    ,w_cty_rte
+    ,b_oth_27;
+
+/*** Unpivot to LDC column ***/
+SELECT 
+    FY_Week
+    ,Delivery_Date
+    ,Area
+    ,Area_Name
+    ,Cluster
+    ,Cluster_Name
+    ,MPOO
+    ,Finance
+    ,Office
+    ,'CDV' Model
+    ,'CDV' Module
+    ,LDC = CAST(SUBSTRING(amount.amounttype,2,2) AS CHAR(2))
+    ,Col = right(amount.amounttype, 3)
+    ,oper_group = cast(substring(amount.amounttype,2, 2) as varchar(255)) + '_' + substring(amount.amounttype, 5, len(amount.amounttype) - 8)
+    ,amount.Amount
+INTO #Unpivoted
+FROM #Working3 AS t1
+UNPIVOT (Amount for AmountType IN (
+     L21_ltr_vol
+    ,L21_flt_vol
+    ,L21_all_vol
+    ,L21_fot_act
+    ,L21_fot_ern
+    ,L21_all_act
+    ,L21_all_ern
+    ,L22_all_vol
+    ,L22_all_act
+    ,L22_all_ern
+    ,L23_all_vol
+    ,L23_all_act
+    ,L23_all_ern
+    ,L26_all_act
+    ,L26_all_ern
+    ,L27_all_act
+    ,L27_all_ern
+    ,L28_all_act
+    ,L29_all_act
+    )) AS AMOUNT
+WHERE amount.Amount <> 0;
+
+/*** Pivot Final ***/
+SELECT    
+    FY_Week
+    ,Delivery_Date
+    ,Area
+    ,Area_Name
+    ,Cluster
+    ,Cluster_Name
+    ,MPOO
+    ,Finance
+    ,Office
+    ,Model
+    ,Module
+    ,LDC
+    ,oper_group
+    ,ISNULL(act, 0) Actual_Hours
+    ,ISNULL(ern, 0) Earned_Hours
+    ,ISNULL(vol, 0) Volume
+INTO #Pivoted
+FROM #Unpivoted
+PIVOT (SUM(amount) FOR Col IN (act, ern, vol)) AS p1;
+
+delete 
+from pcsv_dw.dbo.cdv_daily_data
+where fyweek = @curfywk;
+
+insert into pcsv_dw.dbo.cdv_daily_data (
+    fyweek,
+	datadate,
+	area,
+	areaname,
+	cluster,
+	clustername,
+	mpoo,
+	financenumber,
+	officename,
+	model,
+	module,
+	ldc,
+	opergroup,
+	actualhours,
+	earnedhours,
+	volume,
+	overtimehours)
+select
+     FY_Week
+    ,Delivery_Date
+    ,Area
+    ,Area_Name
+    ,Cluster
+    ,Cluster_Name
+    ,MPOO
+    ,Finance
+    ,Office
+    ,Model
+    ,Module
+    ,LDC
+    ,oper_group
+    ,cast(round(Actual_Hours, 2) as decimal(18,2)) Actual_Hours
+    ,cast(round(Earned_Hours, 2) as decimal(18,2)) Earned_Hours
+    ,cast(round(Volume, 2) as decimal(18,2)) Volume      
+    ,cast(0 as decimal(18,2)) overtime
+from #Pivoted 
+order by delivery_date desc, area_name, cluster_name, mpoo, office, oper_group;
+
+if object_id('tempdb..#Working') is not null begin drop table #Working end;
+
+if object_id('tempdb..#Working2') is not null begin drop table #Working2 end;
+
+if object_id('tempdb..#Working3') is not null begin drop table #Working3 end;
+
+if object_id('tempdb..#Unpivoted') is not null begin drop table #Unpivoted end;
+
+if object_id('tempdb..#Pivoted') is not null begin drop table #Pivoted end;
+
+if object_id('tempdb..#aau_sun') is not null begin drop table #aau_sun; end
+
+if object_id('tempdb..#tmpOperGroups') is not null begin drop table #tmpOperGroups; end
+
+end try
+begin catch
+    declare @statusMessage varchar(4000);
+    
+    set @statusMessage = concat('ERROR on line ', error_line(), '; ', error_message());
+
+    print @statusMessage;
+        
+    throw 51000, @statusMessage, 1;
+
+end catch
+
+SET NOCOUNT OFF;
+
+return;
+
+end

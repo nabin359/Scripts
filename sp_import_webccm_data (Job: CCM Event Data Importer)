@@ -1,1 +1,113 @@
+USE [PVAR_DW]
+GO
+/****** Object:  StoredProcedure [dbo].[sp_import_webccm_data]    Script Date: 1/7/2026 1:45:33 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-- =============================================
+-- Author:		GWALLS
+-- Create date: 10012012
+-- Description:	Import Avus Data
+-- =============================================
+ALTER PROCEDURE [dbo].[sp_import_webccm_data] 
+	
+AS
+	SET NOCOUNT ON;
+--Requires file to be named: WEBCCM.DAT
+-- check to see if file exists
+   	DECLARE @FileName varchar(255) 
+	DECLARE @File_Exists int 
+	SET @FileName = 'E:\Data\WEBCoins\webccm.dat'
+		
+	EXEC Master.dbo.xp_fileexist @FileName, @File_Exists OUT
+	
+	IF @File_Exists = 1  
+	BEGIN
+		PRINT 'WEBccm File Found'
+		PRINT 'WEBccm import begin' 
+		TRUNCATE TABLE pvar_dw.dbo.ccm_events
 
+		-- 121613 GDW. Use new #webccm_import table since source data format changed on 12/14
+		CREATE TABLE [dbo].[#webccm_import](
+			[event_id] [int] NULL,
+			[event_name] [varchar](255) NULL,
+			[event_status] [varchar](255) NULL,
+			[event_type] [varchar](255) NULL,
+			[operational_change] [varchar](255) NULL,
+			[function] [varchar](255) NULL,
+			[finance_number] [varchar](255) NULL,
+			[area_id] [varchar](255) NULL,
+			[area_name] [varchar](255) NULL,
+			[losing_bci_admin_id] [varchar](255) NULL,
+			[bci_name] [varchar](255) NULL,
+			[cluster_code] [varchar](255) NULL,
+			[district] [varchar](255) NULL,
+			[gaining_bid_cluster] [varchar](255) NULL,
+			[losing_bid_cluster] [varchar](255) NULL,
+			[pces_last_name] [varchar](255) NULL,
+			[pces_first_name] [varchar](255) NULL,
+			--[pces_created_dttm] [smalldatetime] NULL,
+			[pces_created_dttm] [varchar](255) NULL,
+			[annual_savings] [int] NULL,
+			--[completion_date] [smalldatetime] NULL
+			[completion_date] [varchar](255) NULL
+		) ON [PRIMARY]		
+
+		--BULK INSERT #avus_import from 'E:\Data\AVUS\CDVAVUS.csv' with (FIRSTROW = 1, FIELDTERMINATOR = ',', ROWTERMINATOR = '\n')
+		-- 121613 GDW.  On 12/14, source file format changed (colon and time added) requiring a change to temp import table and massaging of records
+		--BULK INSERT pvar_dw.dbo.ccm_events from 'E:\DATA\WEBCoins\webccm.dat' with (formatfile = 'E:\DATA\WEBCoins\ccm_evnt.fmt')
+		BULK INSERT #webccm_import from 'E:\DATA\WEBCoins\webccm.dat' with (formatfile = 'E:\DATA\WEBCoins\ccm_evnt.fmt')
+		
+		select COUNT(0) quantity_import from #webccm_import 
+		
+		PRINT 'WEBccm Import Complete'
+		
+		/*
+		Delete t1 from PCDV_DW.dbo.Master_Avus t1, PCDV_DW.dbo.Master_Avus t2 with(nolock) 
+			where t1.avus_own_zip = t2.avus_own_zip and t1.avus_asgn_zip = t2.avus_asgn_zip and 
+			t1.avus_rte_id = t2.avus_rte_id and t1.avus_fy = t2.avus_fy and 
+			t1.avus_wk = t2.avus_wk and t1.avus_post_date < t2.avus_post_date and t1.avus_fy >= 2011
+		
+		PRINT 'Removed duplicate entries from PCDV_DW.dbo.Master_Avus'
+		*/
+			
+		PRINT 'File Processing Code End'
+		--select top 5 pces_created_dttm, left(pces_created_dttm, 11) + ' ' + substring(pces_created_dttm, 13, 20) fixed,   * from #webccm_import
+
+		-- 121613 GDW adjust date fields to remove colon
+		update #webccm_import set pces_created_dttm=left(pces_created_dttm, 11) + ' ' + substring(pces_created_dttm, 13, 20),
+				completion_date=left(completion_date, 11) + ' ' + substring(completion_date, 13, 20)
+		
+		declare @CopyCmd varchar(255)
+		declare @DelCmd varchar(255)
+		declare @FileDay varchar(3)
+		select @FileDay = datepart(dy,getdate())
+		PRINT @FileDay
+
+		--select top 5 * from #webccm_import
+
+		insert into pvar_dw.dbo.ccm_events (event_id, event_name, event_status, event_type, operational_change, [function], finance_number,
+			area_id, area_name, losing_bci_admin_id, bci_name, cluster_code, district, gaining_bid_cluster, losing_bid_cluster, 
+			pces_last_name, pces_first_name, pces_created_dttm, annual_savings, completion_date)
+		select event_id, event_name, event_status, event_type, operational_change, [function], finance_number, area_id, area_name, 
+			losing_bci_admin_id, bci_name, cluster_code, district, gaining_bid_cluster, losing_bid_cluster, pces_last_name, 
+			pces_first_name, pces_created_dttm, annual_savings, completion_date
+		from #webccm_import
+
+		select COUNT(0) quan_ccm_events from ccm_events
+
+		--select top 5 * from ccm_events
+		
+		set @CopyCmd = 'copy E:\Data\WEBCoins\webccm.dat E:\Data\WEBCoins\Backup\webccm_'+@FileDay+'.dat'
+		PRINT 'Copy Command ' + @CopyCmd
+		exec master..xp_cmdshell @CopyCmd
+		
+		set @DelCmd = 'del E:\Data\WEBCoins\webccm.dat'
+		PRINT 'Delete Command ' + @DelCmd
+		exec master..xp_cmdshell @DelCmd
+		
+		
+End
+ELSE 
+		PRINT 'File Not Found'

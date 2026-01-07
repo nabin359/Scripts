@@ -1,0 +1,110 @@
+USE [PCDV_DW]
+GO
+/****** Object:  StoredProcedure [dbo].[sp_import_carr_1700]    Script Date: 1/7/2026 3:09:29 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-- =============================================
+-- Author:		DRUIZ
+-- Create date: 07152011
+-- Description:	Import Carrier by 1700 Daily Data
+-- =============================================
+ALTER PROCEDURE [dbo].[sp_import_carr_1700]
+
+AS
+	SET NOCOUNT ON;
+--Requires file to be named: CDV_1700D.Dat
+-- check to see if file exists
+	DECLARE @SQL_Command varchar(255)
+	DECLARE @Record_Test varchar(255)
+	DECLARE @CopyCmd VARCHAR(255)
+	DECLARE @DelCmd VARCHAR(255)
+   	DECLARE @FileName varchar(255) 
+	DECLARE @File_Exists int
+	DECLARE @ImportElements INT
+	SET @FileName = 'E:\Data\DDM\CDV_1700D.Dat'
+		
+	CREATE TABLE  dbo.[#carr1700_import](
+	[carr_wk] int,
+	[carr_wkdate] datetime,
+	[carr_fin_nbr] char (6),
+	[carr_fill] varchar(8),
+	[carr_ldc22] int,
+	[carr_1700] int,
+	[carr_filla] varchar(8)
+	) 	
+	
+	EXEC Master.dbo.xp_fileexist @FileName, @File_Exists OUT
+	
+	IF @File_Exists = 1  
+	BEGIN
+		PRINT 'File Found, Carrier by 1700 import begin' 
+--		BULK INSERT #carr1700_import from 'E:\Data\DDM\CDV_1700D.Dat' with (FIRSTROW = 1, FIELDTERMINATOR = '|', ROWTERMINATOR = '\n')
+		set @SQL_Command = 'BULK INSERT #carr1700_import from ''E:\Data\DDM\CDV_1700D.Dat'' with (FIRSTROW = 1, FIELDTERMINATOR = ''|'', ROWTERMINATOR = ''\n'')'
+		--PRINT @SQL_Command
+		exec (@SQL_Command)
+		SET @ImportElements = @@ROWCOUNT
+		PRINT CAST(@ImportElements as varchar(255)) + ' Records Inserted #carr1700_import'
+
+		Insert into PCDV_DW.dbo.cdv_carr_1700_daily (carr_WeekID,carr_wkdate,carr_wk,carr_fin_nbr,carr_ldc22,carr_1700)
+		Select carr_wk,carr_wkdate,carr_wk,carr_fin_nbr,carr_ldc22,carr_1700 from #carr1700_import with(nolock)
+		
+		Drop table #carr1700_import
+		
+		select cal_fy_long,cal_fy_wk,min(cal_date_beg_wk)cal_date_beg_wk,max(cal_date_end_wk)cal_date_end_wk 
+		into #cdv_carr1700 from dbo.master_calendar with(nolock) 
+		where cal_fy_wk <>0 and cal_fy_long >=(select top 1 fy_long-1 from workingdate order by fy_long)
+		group by cal_fy_long,cal_fy_wk order by cal_fy_long,cal_fy_wk
+  
+		update PCDV_DW.dbo.cdv_carr_1700_daily set carr_fy=cal_fy_long
+		from #cdv_carr1700 where carr_wkdate between cal_date_beg_wk and cal_date_end_wk and carr_fy is null
+		drop table #cdv_carr1700
+				
+		delete t1 from PCDV_DW.dbo.cdv_carr_1700_daily t1,PCDV_DW.dbo.cdv_carr_1700_daily t2 with(nolock)
+		where t1.carr_fy = t2.carr_fy and t1.carr_wk = t2.carr_wk and t1.carr_wkdate=t2.carr_wkdate and
+		t1.carr_fin_nbr = t2.carr_fin_nbr and t1.carr_post_date <  t2.carr_post_date
+
+		SET @ImportElements = @@ROWCOUNT
+		PRINT CAST(@ImportElements as varchar(255)) + ' Duplicates Removed From PCDV_DW.dbo.csv_carr_1700_daily'
+
+		declare @cc_wk int declare @cc_fy int
+		set @cc_wk = (select top 1 carr_wk from PCDV_DW.dbo.cdv_carr_1700_daily with(nolock) order by carr_fy desc,carr_wk desc)
+		set @cc_fy = (select top 1 carr_fy from PCDV_DW.dbo.cdv_carr_1700_daily with(nolock) order by carr_fy desc,carr_wk desc)
+
+		--delete from cdv_carr_1700 where carr_fy = @cc_fy and carr_wk = @cc_wk
+		delete from cdv_carr_1700 where carr_fy = @cc_fy --and carr_wk >= @cc_wk-1
+		SET @ImportElements = @@ROWCOUNT
+		PRINT CAST(@ImportElements as varchar(255)) + ' Records Removed From PCDV_DW.dbo.csv_carr_1700'
+
+		insert into PCDV_DW.dbo.cdv_carr_1700 (carr_WeekID, carr_wkdate, carr_fy, carr_wk, carr_fin_nbr, carr_ldc22, carr_1700, carr_post_date)
+		/*
+		select carr_WeekID,max(carr_wkdate)carr_wkdate,carr_fy,carr_wk,carr_fin_nbr,sum(carr_ldc22)carr_ldc22,sum(carr_1700)carr_1700,carr_post_date
+		from PCDV_DW.dbo.cdv_carr_1700_daily with(nolock) where carr_fy = @cc_fy and carr_wk = @cc_wk
+		group by carr_WeekID,carr_fy,carr_wk,carr_fin_nbr,carr_post_date
+		*/
+		select carr_WeekID,max(carr_wkdate)carr_wkdate,carr_fy,carr_wk,carr_fin_nbr,sum(carr_ldc22)carr_ldc22,sum(carr_1700)carr_1700,max(carr_post_date)carr_post_date
+		from PCDV_DW.dbo.cdv_carr_1700_daily with(nolock) where carr_fy = @cc_fy --and carr_wk >= @cc_wk-1
+		group by carr_WeekID,carr_fy,carr_wk,carr_fin_nbr
+
+		SET @ImportElements = @@ROWCOUNT
+		PRINT CAST(@ImportElements as varchar(255)) + ' Records Inserted PCDV_DW.dbo.csv_carr_1700: End'
+		
+		declare @FileDay varchar(3)
+		select @FileDay = datepart(dy,getdate())
+
+		set @CopyCmd = 'copy E:\Data\DDM\CDV_1700D.Dat E:\Data\DDM\Backup\CDV_1700D_'+@FileDay+'.Dat'
+		exec master..xp_cmdshell @CopyCmd
+
+		set @CopyCmd = 'del E:\Data\DDM\CDV_1700D.Dat'
+		print @CopyCmd
+		exec master..xp_cmdshell @CopyCmd
+
+		EXEC PCDV_dw.dbo.sp_cdv_file_cleanup
+
+
+	End
+	ELSE 
+		PRINT 'File Not Found'
+
+

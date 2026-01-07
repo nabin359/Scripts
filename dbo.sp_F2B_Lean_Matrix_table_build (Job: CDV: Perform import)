@@ -1,0 +1,933 @@
+USE [PCDV_DW]
+GO
+/****** Object:  StoredProcedure [dbo].[sp_F2B_Lean_Matrix_Table_Build]    Script Date: 1/7/2026 2:36:26 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-- =============================================
+-- Author:		Warren Dennis
+-- Create date: 09/01/2010
+-- Description:	Lean Matrix Table Build / Replace DTS Script
+-- History
+--  2010-09-01: Initial version.
+--  2012-10-24: Modified lock code to use new method. wildgk.
+--  2022-12-09 wildgk. Use new lock/unlock mechanism.
+-- =============================================
+ALTER PROCEDURE [dbo].[sp_F2B_Lean_Matrix_Table_Build] 
+	
+AS
+BEGIN
+	-- SET NOCOUNT ON added to prevent extra result sets from
+	-- interfering with SELECT statements.
+	SET NOCOUNT ON;
+
+	--
+	--		Get Current Year and SPLY Del_Days and Weeks
+	DECLARE @ann_del_days smallint
+	DECLARE @ann_del_days_sply smallint
+	DECLARE @ann_nbr_weeks smallint
+	DECLARE @ann_nbr_weeks_sply smallint
+	SELECT TOP 1	@ann_del_days = ann_del_days, 
+					@ann_del_days_sply = ann_del_days_sply, 
+					@ann_nbr_weeks = ann_nbr_weeks, 
+					@ann_nbr_weeks_sply = ann_nbr_weeks_sply
+	FROM pcdv_dw.dbo.var_annual ORDER BY ann_id desc	
+
+    -- Lock application	
+
+    --2022-12-09 wildgk. Use new lock/unlock mechanism.
+    exec var_servers.dbo.usp_application_lock_unlock
+         @entityIdentifier = 'F2B LEAN MATRIX'
+        ,@lockInd = 1
+        ,@groupLockUnlockInd = 1;
+
+		Declare @annDelDays INT,
+			@CaseLettersPerMin Decimal(18,2),
+			@CaseFlatsPerMin Decimal(18,2),
+			@CasePullDownPerMin Decimal(18,2),
+			@EmpHrsPerDay Decimal(18,2);
+
+	select @annDelDays = ann_del_days
+	from pcdv_dw.dbo.var_annual with (nolock)
+	where ann_id = 1;
+
+	select @CaseLettersPerMin = cased_letters_per_minute, 
+	       @CaseFlatsPerMin = cased_flats_per_minute, 
+		   @CasePullDownPerMin = case_pulldown_per_minute
+	from pcdv_delpvar.dbo.avar_cdv_prod;
+
+	select @EmpHrsPerDay = cast(setting_value AS Decimal(18,2)) 
+	from var_servers.dbo.miscellaneous_settings with(nolock)
+	where Setting_id = 14;
+
+
+	-- Clear Table
+	TRUNCATE table var_f2b_matrix
+
+    -- Fill Table
+    INSERT INTO var_f2b_matrix
+	(w_fy, w_wk, w_fin_nbr)
+	select distinct w_fy, w_wk, w_fin_nbr
+	from var_weekly
+	where w_fy= (select top 1 w_fy from var_weekly order by w_fy desc)
+	and w_fin_nbr in (select distinct b_fin_nbr from var_base where b_cdv_ind=1 and b_mpoo<>'x')
+	order by w_fin_nbr,w_fy, w_wk
+    
+    
+    -- Update Base Elements
+    SELECT     var_base.b_fin_nbr, var_base.b_area area, var_base.b_area_name area_name, var_base.b_cluster cluster, var_base.b_cluster_name 
+		cluster_name, var_base.b_mpoo mpoo, var_base.b_lead_name lead_name, var_base.b_lead_fin_nbr lead_fin, 
+		var_base.b_fin_name fin_name, var_base.b_hrs_fot_w_brk hrs_fot_w_brk, var_base.b_car_rte_nbr car_rte_nbr, 
+		       
+		SUM((var_base.b_hrs_ldc21 + var_base.b_hrs_ldc22 + var_base.b_hrs_ldc29 
+		+ CAST(var_base.b_car_rte_nbr AS DECIMAL(18,2)) * 4 / @annDelDays) / @EmpHrsPerDay) AS car_equ_rte_nbr, 
+		b_hrs_ldc21 hrs_ldc21, b_hrs_ldc22 hrs_ldc22, b_hrs_ldc23 hrs_ldc23,  b_hrs_ldc27 hrs_ldc27, b_hrs_ldc29 hrs_ldc29
+		
+	INTO #TEMP1
+	FROM var_base CROSS JOIN var_annual
+	GROUP BY var_base.b_area, var_base.b_fin_nbr, var_base.b_area_name, var_base.b_cluster, 
+		var_base.b_cluster_name, var_base.b_mpoo, var_base.b_lead_name, var_base.b_lead_fin_nbr, var_base.b_fin_name, 
+		var_base.b_hrs_fot_w_brk, var_base.b_car_rte_nbr, b_hrs_ldc21, b_hrs_ldc22, b_hrs_ldc23, b_hrs_ldc27, b_hrs_ldc29
+								  
+	UPDATE var_f2b_matrix
+	SET b_area = area, b_area_name = area_name, b_cluster = cluster, b_cluster_name = cluster_name, 
+		b_mpoo = mpoo, b_lead_name = lead_name, b_lead_fin_nbr = lead_fin, b_fin_name = fin_name, b_hrs_fot_w_brk = hrs_fot_w_brk, 
+		b_car_rte_nbr = car_rte_nbr, b_car_equ_rte_nbr = car_equ_rte_nbr, b_hrs_ldc21 = hrs_ldc21, 
+		b_hrs_ldc22 = hrs_ldc22,  b_hrs_ldc23 = hrs_ldc23, b_hrs_ldc27 = hrs_ldc27, b_hrs_ldc29 = hrs_ldc29
+	FROM #TEMP1
+	WHERE b_fin_nbr = w_fin_nbr
+
+    
+    -- SPLY Data
+    DECLARE @sply AS int, @maxWK AS int
+	SET @sply = (SELECT TOP 1 w_fy - 1
+			FROM var_weekly
+			ORDER BY w_fy DESC)
+	SET @maxWK = (SELECT TOP 1 w_wk
+			FROM var_weekly
+			ORDER BY w_fy DESC, w_wk DESC)
+
+    
+	-- Get Earned 2014-07-09; added earned fixed office time in support of pct/std correction
+    UPDATE var_f2b_matrix
+	SET var_f2b_matrix.cd_ern_hrs_ldc21 = var_calc_cdv.cd_ern_hrs_ldc21, var_f2b_matrix.cd_ern_hrs_ldc22 = var_calc_cdv.cd_ern_hrs_ldc22, 
+		var_f2b_matrix.cd_ern_hrs_ldc26 = var_calc_cdv.cd_ern_hrs_ldc26, var_f2b_matrix.cd_ern_hrs_ldc29 = var_calc_cdv.cd_ern_hrs_ldc29, 
+		var_f2b_matrix.cd_proj_ern_hrs_ldc21 = var_calc_cdv.cd_proj_ern_hrs_ldc21, var_f2b_matrix.cd_ern_fot = var_calc_cdv.cd_ern_fot
+	FROM var_calc_cdv
+	WHERE calc_fy = w_fy AND calc_wk = w_wk AND calc_fin_nbr = w_fin_nbr
+
+	-- Get Earned 2014-07-09; added earned fixed office time in support of pct/std correction - SPLY
+    UPDATE var_f2b_matrix
+	SET cd_ern_fot_sply = var_calc_cdv.cd_ern_fot
+	FROM var_calc_cdv
+	WHERE calc_fy = @sply AND calc_wk = w_wk AND calc_fin_nbr = w_fin_nbr
+
+    
+    -- Weekly Data
+    UPDATE    var_f2b_matrix
+	SET var_f2b_matrix.w_del_days = var_weekly.w_del_days, var_f2b_matrix.w_hrs_car_tot = var_weekly.w_hrs_car_tot, 
+		var_f2b_matrix.w_hrs_car_ot = var_weekly.w_hrs_car_ot, var_f2b_matrix.w_hrs_ldc21 = var_weekly.w_hrs_ldc21, 
+		var_f2b_matrix.w_hrs_ldc21sply = var_weekly.w_hrs_ldc21sply, var_f2b_matrix.w_hrs_ldc22 = var_weekly.w_hrs_ldc22, 
+		var_f2b_matrix.w_hrs_ldc22sply = var_weekly.w_hrs_ldc22sply, var_f2b_matrix.w_hrs_ldc23 = var_weekly.w_hrs_ldc23, 
+		var_f2b_matrix.w_hrs_ldc23sply = var_weekly.w_hrs_ldc23sply, var_f2b_matrix.w_hrs_ldc24 = var_weekly.w_hrs_ldc24, 
+		var_f2b_matrix.w_hrs_ldc24sply = var_weekly.w_hrs_ldc24sply, var_f2b_matrix.w_hrs_ldc26 = var_weekly.w_hrs_ldc26, 
+		var_f2b_matrix.w_hrs_ldc26sply = var_weekly.w_hrs_ldc26sply, var_f2b_matrix.w_hrs_ldc27 = var_weekly.w_hrs_ldc27, 
+		var_f2b_matrix.w_hrs_ldc27sply = var_weekly.w_hrs_ldc27sply, var_f2b_matrix.w_hrs_ldc28 = var_weekly.w_hrs_ldc28, 
+		var_f2b_matrix.w_hrs_ldc28sply = var_weekly.w_hrs_ldc28sply, var_f2b_matrix.w_hrs_ldc29 = var_weekly.w_hrs_ldc29, 
+		var_f2b_matrix.w_hrs_ldc29sply = var_weekly.w_hrs_ldc29sply, var_f2b_matrix.w_hrs_ldc92 = var_weekly.w_hrs_ldc92, 
+		var_f2b_matrix.w_hrs_ldc92sply = var_weekly.w_hrs_ldc92sply, var_f2b_matrix.w_sply_hrs = var_weekly.w_sply_hrs, 
+		var_f2b_matrix.w_sply_dels = var_weekly.w_sply_dels, var_f2b_matrix.w_sply_del_days = var_weekly.w_sply_del_days, 
+		var_f2b_matrix.w_cty_cupd = var_weekly.w_cty_cupd, var_f2b_matrix.w_vol_cas_ltr = var_weekly.w_vol_cas_ltr, 
+		var_f2b_matrix.w_vol_cas_flt = var_weekly.w_vol_cas_flt, var_f2b_matrix.w_vol_dps_ltr = var_weekly.w_vol_dps_ltr, 
+		var_f2b_matrix.w_hrs_car_sl = var_weekly.w_hrs_car_sl, var_f2b_matrix.w_hrs_car_lwop = var_weekly.w_hrs_car_lwop, 
+		var_f2b_matrix.w_carr_22 = var_weekly.w_carr_22, var_f2b_matrix.w_carr_1700 = var_weekly.w_carr_1700,
+		var_f2b_matrix.w_hrs_fn2c_tot = var_weekly.w_hrs_fn2c_tot,
+		var_f2b_matrix.w_hrs_fn2c_tot_sply = var_weekly.w_hrs_fn2c_tot_sply,
+		var_f2b_matrix.w_hrs_fn2c_tot_plan = var_weekly.w_hrs_fn2c_tot_plan,
+		var_f2b_matrix.w_hrs_fn2c_ot = var_weekly.w_hrs_fn2c_ot,
+		var_f2b_matrix.w_hrs_fn2c_ot_sply = var_weekly.w_hrs_fn2c_ot_sply
+	FROM var_weekly WITH (NOLOCK)
+	WHERE var_weekly.w_fy = var_f2b_matrix.w_fy AND var_weekly.w_wk = var_f2b_matrix.w_wk AND var_weekly.w_fin_nbr = var_f2b_matrix.w_fin_nbr
+
+                          
+	SELECT w_fy + 1 fy, w_wk wk, w_fin_nbr fin, w_vol_cas_ltr ltrs, w_vol_cas_flt flts, w_vol_dps_ltr dps, w_hrs_car_sl sl, 
+		w_hrs_car_ot ot, w_hrs_car_tot tot_hrs, w_hrs_car_lwop lwop
+	INTO #TEMP2
+	FROM var_weekly WITH (NOLOCK)
+	WHERE var_weekly.w_fy = @sply AND var_weekly.w_wk <= @maxWK
+
+	/* */
+	-- GDW One Time Adjust 
+	INSERT INTO #TEMP2 (fy, wk, fin, ltrs, flts, dps, sl, ot, tot_hrs, lwop)
+	select 2016, 53, w_fin_nbr fin, w_vol_cas_ltr ltrs, w_vol_cas_flt flts, w_vol_dps_ltr dps, w_hrs_car_sl sl, 
+		w_hrs_car_ot ot, w_hrs_car_tot tot_hrs, w_hrs_car_lwop lwop
+	FROM var_weekly WITH (NOLOCK)
+	WHERE var_weekly.w_fy = 2016 and var_weekly.w_wk=1
+	/* */
+
+	UPDATE var_f2b_matrix
+	SET sply_vol_cas_ltr = ltrs, sply_vol_cas_flt = flts, sply_vol_dps_ltr = dps, w_hrs_car_slsply = sl, 
+		w_hrs_car_otsply = ot, w_hrs_car_totsply = tot_hrs, w_hrs_car_lwopsply = lwop
+	FROM #TEMP2 WITH (NOLOCK)
+	WHERE fy = w_fy AND wk = w_wk AND fin = var_f2b_matrix.w_fin_nbr
+
+	SELECT calc_fy + 1 fy, calc_wk, calc_fin_nbr, cd_ern_hrs_ldc21, cd_ern_hrs_ldc22, cd_ern_hrs_ldc26, cd_ern_hrs_ldc29, cd_proj_ern_hrs_ldc21
+	INTO #ERNSPLY
+	FROM pcdv_dw.dbo.var_calc_cdv WITH (NOLOCK)
+	WHERE calc_fy = @sply AND calc_wk <= @maxWK
+
+	UPDATE dbo.var_f2b_matrix
+	SET cd_ern_hrs_ldc21sply = #ERNSPLY.cd_ern_hrs_ldc21, 
+		cd_ern_hrs_ldc22sply = #ERNSPLY.cd_ern_hrs_ldc22, 
+		cd_ern_hrs_ldc26sply = #ERNSPLY.cd_ern_hrs_ldc26, 
+		cd_ern_hrs_ldc29sply = #ERNSPLY.cd_ern_hrs_ldc29, 
+		cd_proj_ern_hrs_ldc21sply = #ERNSPLY.cd_proj_ern_hrs_ldc21
+	FROM #ERNSPLY WITH (NOLOCK)
+	WHERE fy = w_fy AND calc_wk = w_wk AND calc_fin_nbr = var_f2b_matrix.w_fin_nbr
+    
+    -- Plan Data & CUPD/PKCC/SB2B
+    UPDATE    dbo.var_f2b_matrix
+	SET w_hrs_ldc21plan = fsh_ldc_21_plan, w_hrs_ldc22plan = fsh_ldc_22_plan, w_hrs_ldc23plan = fsh_ldc_23_plan, w_hrs_ldc24plan = fsh_ldc_24_plan, w_hrs_ldc26plan = fsh_ldc_26_plan, 
+		w_hrs_ldc27plan = fsh_ldc_27_plan, w_hrs_ldc28plan = fsh_ldc_28_plan, w_hrs_ldc29plan = fsh_ldc_29_plan, w_hrs_ldc92plan = fsh_ldc_92_plan, w_hrs_car_totplan = fsh_fn2b_plan,
+		fsh_sb2b_cura=b.fsh_sb2b_cura, fsh_sb2b_curs=b.fsh_sb2b_curs, fsh_cupd_cura=b.fsh_cupd_cura, fsh_cupd_curs=b.fsh_cupd_curs, fsh_pkcc_cura=b.fsh_pkcc_cura, fsh_pkcc_curs=b.fsh_pkcc_curs
+	FROM         dbo.Master_Flash b WITH (NOLOCK)
+	WHERE     fsh_fy = w_fy AND fsh_wk = w_wk AND fsh_fin_nbr_station = w_fin_nbr
+
+	-- Align FYWK to var_weekly FY and WK
+	UPDATE PCDV_DW.dbo.var_f2b_matrix SET w_fywk=(w_fy*100)+w_wk
+
+ 	--
+	--week 53 add to week 1 if last FY has only 52 weeks (incomplete Week 53)  
+	IF @ann_nbr_weeks_sply = 52 BEGIN -- Add previous FY week 53 to current FY week 1 if previous is 52 standard weeks  
+		UPDATE    dbo.var_f2b_matrix
+		SET              w_hrs_ldc21plan = w_hrs_ldc21plan + cast(fsh_ldc_21_plan AS int), w_hrs_ldc22plan = w_hrs_ldc22plan + cast(fsh_ldc_22_plan AS int), 
+		  w_hrs_ldc23plan = w_hrs_ldc23plan + cast(fsh_ldc_23_plan AS int), w_hrs_ldc24plan = w_hrs_ldc24plan + cast(fsh_ldc_24_plan AS int),
+		  w_hrs_ldc26plan = w_hrs_ldc26plan + cast(fsh_ldc_26_plan AS int), w_hrs_ldc27plan = w_hrs_ldc27plan + cast(fsh_ldc_27_plan AS int),
+		  w_hrs_ldc28plan = w_hrs_ldc28plan + cast(fsh_ldc_28_plan AS int), w_hrs_ldc29plan = w_hrs_ldc29plan + cast(fsh_ldc_29_plan AS int), 
+		  w_hrs_ldc92plan = w_hrs_ldc92plan + cast(fsh_ldc_92_plan AS int), w_hrs_car_totplan = w_hrs_car_totplan + cast(fsh_fn2b_plan AS int),
+		  fsh_sb2b_cura = var_f2b_matrix.fsh_sb2b_cura + b.fsh_sb2b_cura, fsh_cupd_cura = var_f2b_matrix.fsh_cupd_cura + b.fsh_cupd_cura, fsh_pkcc_cura = var_f2b_matrix.fsh_pkcc_cura + b.fsh_pkcc_cura
+		FROM         dbo.Master_Flash b WITH (NOLOCK)
+		WHERE     w_fy =
+			  (SELECT     TOP 1 fy_long
+				FROM          workingdate WITH (nolock) order by fy_long) AND fsh_fy =
+			  (SELECT     TOP 1 fy_long - 1
+				FROM          workingdate WITH (nolock)  order by fy_long) AND w_wk = 1 AND fsh_wk = 53 AND w_fin_nbr = fsh_fin_nbr_station		-- Handled
+	END
+
+ 	-- for SPLY
+	--week 53 add to week 1 if last FY has only 53 weeks (incomplete Week 53)  --
+	IF @ann_nbr_weeks_sply = 53 BEGIN -- Add previous FY week 53 to current FY week 1 if previous is 52 standard weeks  --
+		UPDATE    dbo.var_f2b_matrix
+		SET   fsh_sb2b_curs = var_f2b_matrix.fsh_sb2b_curs + b.fsh_sb2b_curs, fsh_cupd_curs = var_f2b_matrix.fsh_cupd_curs + b.fsh_cupd_curs, fsh_pkcc_curs = var_f2b_matrix.fsh_pkcc_curs + b.fsh_pkcc_curs
+		FROM         dbo.Master_Flash b WITH (NOLOCK)
+		WHERE     w_fy =
+			  (SELECT     TOP 1 fy_long
+				FROM          workingdate WITH (nolock)  order by fy_long) AND fsh_fy =
+			  (SELECT     TOP 1 fy_long - 1
+				FROM          workingdate WITH (nolock)  order by fy_long) AND w_wk = 1 AND fsh_wk = 53 AND w_fin_nbr = fsh_fin_nbr_station		-- Handled
+	END
+    
+    -- City Routes
+    -- Modified to update from var_weekly instead of flash. DRR 07102014
+    
+    UPDATE pcdv_dw.dbo.var_f2b_matrix SET w_cty_rte = b.w_cty_rte FROM pcdv_dw.dbo.var_weekly b WITH (NOLOCK)
+	WHERE var_f2b_matrix.w_fy = b.w_fy AND var_f2b_matrix.w_wk = b.w_wk AND var_f2b_matrix.w_fin_nbr = b.w_fin_nbr
+      
+    UPDATE pcdv_dw.dbo.var_f2b_matrix SET w_cty_rte_sply = b.w_cty_rte FROM pcdv_dw.dbo.var_weekly b WITH (NOLOCK)
+	WHERE var_f2b_matrix.w_fy = b.w_fy+1 AND var_f2b_matrix.w_wk = b.w_wk AND var_f2b_matrix.w_fin_nbr = b.w_fin_nbr  
+    
+/*  UPDATE pcdv_dw.dbo.var_f2b_matrix
+	SET w_cty_rte = fsh_ctrt_cura, w_cty_rte_sply = fsh_ctrt_curs
+	FROM pcdv_dw.dbo.Master_Flash WITH (NOLOCK)
+	WHERE fsh_fy = w_fy AND fsh_wk = w_wk AND fsh_fin_nbr_station = w_fin_nbr*/
+    
+    -- CDPOM Rte Structure Current
+    TRUNCATE TABLE pcdv_delpvar.dbo.avar_cdv_currRTES 
+    
+    INSERT INTO pcdv_delpvar.dbo.avar_cdv_currRTES
+    (calc_fy, calc_wk, b_area, b_cluster, b_mpoo, calc_fin_nbr, actFTER, ernFTER)
+     SELECT dbo.var_calc_cdv.calc_fy, dbo.var_calc_cdv.calc_wk, dbo.var_base.b_area, 
+            dbo.var_base.b_cluster, dbo.var_base.b_mpoo, dbo.var_calc_cdv.calc_fin_nbr, 
+            SUM(dbo.var_calc_cdv.cd_act_f2b_hrs_tot) / SUM(dbo.var_calc_cdv.calc_del_days) 
+            / @EmpHrsPerDay AS actFTER, (((((((((((((CAST(SUM(w_vol_cas_ltr) AS DECIMAL(18, 2))) / @CaseLettersPerMin) 
+            + (SUM(w_vol_cas_flt) / @CaseFlatsPerMin) + ((((CAST(SUM(w_vol_cas_ltr) AS DECIMAL(18, 2)))) 
+            + (SUM(w_vol_cas_flt))) / @CasePullDownPerMin)) / 60)) * (r_pct2stand)) + (((r_fot * w_del_days) * (w_ern_dois_rtes)) 
+            / 60)))))) + (CASE WHEN SUM(w_cty_cupd) = 0 OR
+            r_sei = 0 THEN 0 ELSE ((SUM(w_cty_cupd) / (r_sei))) END) + (((CAST((b_car_rte_nbr * 4) 
+            AS decimal(15, 5)) / @ann_del_days) * SUM(w_del_days)))) / SUM(dbo.var_calc_cdv.calc_del_days)) 
+            / @EmpHrsPerDay ernFTER
+     FROM dbo.var_weekly WITH (NOLOCK), pcdv_delpvar.dbo.avar_cdv_newRTES WITH (NOLOCK), 
+        dbo.var_base WITH (NOLOCK) INNER JOIN
+        dbo.var_calc_cdv WITH (NOLOCK) ON 
+        dbo.var_base.b_fin_nbr = dbo.var_calc_cdv.calc_fin_nbr
+     WHERE (dbo.var_calc_cdv.calc_fy =
+            (SELECT     ann_current_fy
+              FROM          dbo.var_annual WITH (NOLOCK))) AND (dbo.var_base.b_mpoo <> 'x') AND 
+        (dbo.var_base.b_cdv_ind = 1) AND b_fin_nbr = r_fin_nbr AND b_fin_nbr = w_fin_nbr AND 
+        calc_fy = w_fy AND calc_wk = w_wk
+     GROUP BY dbo.var_calc_cdv.calc_fy, dbo.var_base.b_area, dbo.var_base.b_cluster, w_ern_dois_rtes,
+            dbo.var_calc_cdv.calc_fin_nbr, dbo.var_base.b_hrs_ldc21, dbo.var_base.b_hrs_ldc22, 
+            dbo.var_base.b_car_rte_nbr, dbo.var_base.b_hrs_ldc29, dbo.var_base.b_mpoo, 
+            dbo.var_calc_cdv.calc_wk, r_pct2stand, r_fot, w_del_days, r_sei
+    
+    -- CDPOM Rte Structure SPLY
+ --   DECLARE @LtrRatio AS decimal(18, 8), @FltRatio AS decimal(18, 8) 
+    
+ --   SELECT @LtrRatio = coalesce(cased_letters_factor,projection_letters_ratio), @FltRatio = coalesce(cased_flats_factor,projection_flats_ratio)
+	--FROM pcdv_delpvar.dbo.AVAR_CDV_PROD WITH (nolock)
+ 
+	TRUNCATE TABLE pcdv_delpvar.dbo.avar_cdv_splyRTES
+	
+	INSERT  INTO pcdv_delpvar.dbo.avar_cdv_splyRTES
+	(calc_fy, b_area, b_cluster, b_mpoo, calc_fin_nbr, actFTER, ernFTER, equiv_rte_nbr, ernFTERTarget)
+	SELECT var_calc_cdv.calc_fy, var_base.b_area, var_base.b_cluster, var_base.b_mpoo, var_calc_cdv.calc_fin_nbr, 
+         SUM(CAST(w_hrs_ldc21 + w_hrs_ldc22 + w_hrs_ldc26 + w_hrs_ldc28 + w_hrs_ldc29 AS DECIMAL(30, 2))) / SUM(var_calc_cdv.calc_del_days) / @EmpHrsPerDay 
+         AS actFTER, 
+         (((((((SUM(CAST(var_weekly.w_vol_cas_ltr AS DECIMAL(18,2))) / @CaseLettersPerMin) 
+         + (SUM(CAST(var_weekly.w_vol_cas_flt AS BIGINT)) / @CaseFlatsPerMin) 
+         + (((SUM(CAST(var_weekly.w_vol_cas_ltr AS DECIMAL(18,
+          2)))) + (SUM(CAST(var_weekly.w_vol_cas_flt AS BIGINT)))) / @CasePullDownPerMin)) / 60) 
+         * (PCDV_DelpVar.dbo.avar_cdv_newRTES.r_pct2stand)) 
+         + ((((r_fot * SUM(var_weekly.w_del_days)) * (w_ern_dois_rtes))) / 60)) 
+         + (CAST(var_base.b_car_rte_nbr * 4 AS decimal(30, 5)) / @ann_del_days * SUM(var_weekly.w_del_days)) 
+         + (CASE WHEN SUM(CAST(w_cty_cupd AS BIGINT)) = 0 OR
+         r_sei = 0 THEN 0 ELSE ((SUM(CAST(w_cty_cupd AS BIGINT))
+          / (r_sei))) END)) / SUM(var_weekly.w_del_days))  / @EmpHrsPerDay AS ernFTER,
+           
+         (var_base.b_hrs_ldc21 + var_base.b_hrs_ldc22 + var_base.b_hrs_ldc29
+          + CAST(var_base.b_car_rte_nbr AS DECIMAL(18, 2)) 
+         * 4 / @annDelDays) / @EmpHrsPerDay AS equiv_rte_nbr, 
+         
+         (((((((SUM(CAST(var_weekly.w_vol_cas_ltr * cased_letters_factor AS DECIMAL(18, 2))) / @CaseLettersPerMin) 
+         + (SUM(CAST(var_weekly.w_vol_cas_flt * cased_flats_factor AS BIGINT)) / @CaseFlatsPerMin) 
+         + (((SUM(CAST(var_weekly.w_vol_cas_ltr * cased_letters_factor AS DECIMAL(18, 2)))) 
+         + (SUM(CAST(var_weekly.w_vol_cas_flt * cased_flats_factor AS BIGINT)))) / @CasePullDownPerMin)) / 60) * (PCDV_DelpVar.dbo.avar_cdv_newRTES.r_pct2stand)) 
+         + ((((r_fot * SUM(var_weekly.w_del_days)) * (w_ern_dois_rtes))) / 60)) 
+         + (CAST(var_base.b_car_rte_nbr * 4 AS decimal(30, 5)) / @ann_del_days * SUM(var_weekly.w_del_days)) 
+         + (CASE WHEN SUM(CAST(w_cty_cupd AS BIGINT))  = 0 OR  r_sei = 0 THEN 0 ELSE ((SUM(CAST(w_cty_cupd AS BIGINT))
+          / (r_sei))) END)) / SUM(var_weekly.w_del_days)) / @EmpHrsPerDay AS ernFTERTarget
+	
+	FROM pcdv_delpvar.dbo.AVAR_CDV_PROD WITH (nolock),
+         var_calc_cdv WITH (NOLOCK) INNER JOIN
+         var_base WITH (NOLOCK) ON 
+         var_calc_cdv.calc_fin_nbr = var_base.b_fin_nbr INNER JOIN
+         PCDV_DelpVar.dbo.avar_cdv_newRTES WITH (NOLOCK) 
+         ON 
+         var_base.b_fin_nbr = PCDV_DelpVar.dbo.avar_cdv_newRTES.r_fin_nbr
+          INNER JOIN
+         var_weekly WITH (NOLOCK) ON 
+         var_base.b_fin_nbr = var_weekly.w_fin_nbr AND 
+         var_calc_cdv.calc_fy = var_weekly.w_fy AND 
+         var_calc_cdv.calc_wk = var_weekly.w_wk
+		 left join pcdv_delpvar.dbo.projection_factors_unit
+            on var_weekly.w_fin_nbr = finance_number
+	WHERE     (var_calc_cdv.calc_fy =
+				 (SELECT     ann_current_fy - 1
+				   FROM          dbo.var_annual WITH (NOLOCK))) AND 
+			 (var_base.b_mpoo <> 'x') AND (var_base.b_cdv_ind = 1)
+	GROUP BY var_calc_cdv.calc_fy, var_base.b_area, w_ern_dois_rtes,
+			 var_base.b_cluster,  
+			 var_calc_cdv.calc_fin_nbr, var_base.b_hrs_ldc21, 
+			 var_base.b_hrs_ldc22, var_base.b_car_rte_nbr, 
+         var_base.b_hrs_ldc29, var_base.b_mpoo, 
+         PCDV_DelpVar.dbo.avar_cdv_newRTES.r_pct2stand, 
+         PCDV_DelpVar.dbo.avar_cdv_newRTES.r_fot, 
+         PCDV_DelpVar.dbo.avar_cdv_newRTES.r_sei
+    
+    -- Lead Name Update
+    UPDATE dbo.var_f2b_matrix
+	SET b_lead_name = var_base.b_lead_name
+	FROM var_base
+	WHERE var_base.b_lead_fin_nbr = var_f2b_matrix.b_lead_fin_nbr AND var_f2b_matrix.b_lead_name IS NULL
+
+
+
+	-- Level Based Summary Table Updates
+
+
+           TRUNCATE TABLE  PCDV_DW.dbo.f2b_matrix_fin_nbr
+
+            Insert INTO PCDV_DW.dbo.f2b_matrix_fin_nbr
+
+                SELECT
+
+                     vfm.b_area
+                    ,vfm.b_area_name
+                    ,vfm.b_cluster
+                    ,vfm.b_cluster_Name
+                    ,vfm.b_mpoo
+                    ,vfm.b_lead_fin_nbr
+                    ,vfm.b_lead_name
+                    ,vfm.w_fin_nbr
+                    ,vfm.b_fin_name
+                    ,vfm.w_fywk
+
+                     --this part never changes due to scope
+                    ,SUM(CAST(vfm.w_hrs_fn2c_tot as bigint)) AS SumPlan2BComp01
+
+                    /*
+					,SUM(CAST(vfm.w_hrs_ldc21plan + vfm.w_hrs_ldc22plan + vfm.w_hrs_ldc23plan
+                               + vfm.w_hrs_ldc27plan + vfm.w_hrs_ldc28plan + vfm.w_hrs_ldc29plan as bigint)) AS SumPlan2BComp02
+					*/
+					,SUM(CAST(vfm.w_hrs_fn2c_tot_plan as bigint)) AS SumPlan2BComp02
+
+                    ,SUM(CAST(vfm.w_hrs_fn2c_tot_sply as bigint)) AS SumSply2BComp01
+
+                    -- Add LDC 24 to 23 & 27 PCT to SPLY Per Jennifer Vo - Or not
+					,SUM(CAST(vfm.w_hrs_ldc23sply + vfm.w_hrs_ldc27sply as bigint)) AS SumLdc237Comp01
+                    --,SUM(CAST(vfm.w_hrs_ldc23sply + vfm.w_hrs_ldc24sply + vfm.w_hrs_ldc27sply as bigint)) AS SumLdc237Comp01
+
+                    -- Add LDC 24 to 23 & 27 PCT to SPLY Per Jennifer Vo - Or not
+                    ,SUM(CAST(vfm.w_hrs_ldc23 + vfm.w_hrs_ldc27 as bigint)) AS SumLdc237Comp02
+                    --,SUM(CAST(vfm.w_hrs_ldc23 + vfm.w_hrs_ldc24 + vfm.w_hrs_ldc27 as bigint)) AS SumLdc237Comp02
+
+                    -- Remove LDC 24, Included in FN2C as of 3/13/17
+					--,SUM(CAST( vfm.w_hrs_fn2c_tot + vfm.w_hrs_ldc24 + vfm.w_hrs_ldc26  + vfm.w_hrs_ldc92 as bigint)) AS SumDph2SplyComp01
+					,SUM(CAST( vfm.w_hrs_fn2c_tot + vfm.w_hrs_ldc26  + vfm.w_hrs_ldc92 as bigint)) AS SumDph2SplyComp01
+
+                    ,SUM(CAST(vfm.sply_vol_cas_ltr + vfm.sply_vol_cas_flt as bigint)) AS SumTotVolComp01
+
+                    ,SUM(CAST(vfm.w_vol_cas_ltr + vfm.w_vol_cas_flt as bigint)) AS SumTotVolComp02
+
+                    ,SUM(CAST(vfm.w_hrs_ldc21 + vfm.w_hrs_ldc29 as bigint)) AS SumOei2SplyComp01
+
+                    ,SUM(CAST(vfm.w_hrs_ldc21sply + vfm.w_hrs_ldc29sply as bigint)) AS SumOei2SplyComp02
+
+                    ,SUM(CAST(vfm.b_hrs_ldc22 * vfm.w_del_days as bigint)) AS SUM_b_hrs_ldc22
+
+                    ,SUM(CAST(vfm.w_hrs_ldc22 as bigint)) AS SUM_w_hrs_ldc22
+
+                    ,SUM(CAST(vfm.w_hrs_fn2c_ot as bigint)) AS SUM_w_hrs_car_ot
+
+                    ,SUM(CAST(vfm.w_hrs_fn2c_tot as bigint)) AS SUM_w_hrs_car_tot
+
+                    ,SUM(CAST(vfm.w_sply_dels as bigint)) AS SUM_w_sply_dels
+
+                    ,SUM(CAST(vfm.w_cty_cupd as bigint)) AS SUM_w_cty_cupd
+
+                    ,SUM(CAST(vfm.w_sply_hrs as bigint)) AS SUM_w_sply_hrs
+
+                    ,SUM(CAST(vfm.w_hrs_ldc22sply as bigint)) AS SUM_w_hrs_ldc22sply
+
+                    ,SUM(CAST(vfm.w_carr_22 as bigint)) AS SUM_w_carr_22
+
+                    ,SUM(CAST(vfm.w_carr_1700 as bigint)) AS SUM_w_carr_1700
+
+                    ,SUM(CAST(vfm.fsh_sb2b_cura * 1.0 as bigint)) AS SUM_fsh_sb2b_cura
+
+                    ,SUM(CAST(vfm.fsh_cupd_cura as bigint)) AS SUM_fsh_cupd_cura
+
+                    ,SUM(CAST(vfm.w_cty_rte * vfm.w_del_days as bigint)) AS SumRteDaysCur
+
+                    ,SUM(CAST(vfm.w_cty_rte_sply * vfm.w_sply_del_days as bigint)) AS SumRteDaysSply
+
+                    ,SUM(CAST(vfm.fsh_pkcc_cura as bigint)) AS SUM_w_vol_pkcc
+
+                    ,SUM(CAST(vfm.fsh_pkcc_curs as bigint)) AS SUM_w_vol_pkcc_sply
+                    --end of never changes due to scope
+                
+                --currently does not change by scope
+                FROM pcdv_dw.dbo.var_f2b_matrix vfm
+
+                --changes by scope
+                GROUP BY
+                     vfm.b_area
+                    ,vfm.b_area_name
+                    ,vfm.b_cluster
+                    ,vfm.b_cluster_Name
+                    ,vfm.b_mpoo
+                    ,vfm.b_lead_fin_nbr
+                    ,vfm.b_lead_name
+                    ,vfm.w_fin_nbr
+                    ,vfm.b_fin_name
+                    ,vfm.w_fywk;
+
+ 
+			--***********************************************************************                  
+				--update for f2b_matrix_lvl24
+    
+
+            TRUNCATE TABLE  PCDV_DW.dbo.f2b_matrix_lvl24
+
+            Insert INTO PCDV_DW.dbo.f2b_matrix_lvl24
+
+                SELECT
+
+                     fmf.b_area
+                    ,fmf.b_area_name
+                    ,fmf.b_cluster
+                    ,fmf.b_cluster_Name
+                    ,fmf.b_mpoo
+                    ,fmf.b_lead_fin_nbr
+                    ,fmf.b_lead_name
+
+                    ,fmf.w_fywk
+
+                     --this part never changes due to scope
+                    ,SUM(CAST(fmf.SumPlan2BComp01 as bigint)) AS SumPlan2BComp01
+                    ,SUM(CAST(fmf.SumPlan2BComp02 as bigint)) AS SumPlan2BComp02
+                    ,SUM(CAST(fmf.SumSply2BComp01 as bigint)) AS SumSply2BComp01
+                    ,SUM(CAST(fmf.SumLdc237Comp01 as bigint)) AS SumLdc237Comp01
+                    ,SUM(CAST(fmf.SumLdc237Comp02 as bigint)) AS SumLdc237Comp02
+                    ,SUM(CAST(fmf.SumDph2SplyComp01 as bigint)) AS SumDph2SplyComp01
+                    ,SUM(CAST(fmf.SumTotVolComp01 as bigint)) AS SumTotVolComp01
+                    ,SUM(CAST(fmf.SumTotVolComp02 as bigint)) AS SumTotVolComp02
+                    ,SUM(CAST(fmf.SumOei2SplyComp01 as bigint)) AS SumOei2SplyComp01
+                    ,SUM(CAST(fmf.SumOei2SplyComp02 as bigint)) AS SumOei2SplyComp02
+                    ,SUM(CAST(fmf.SUM_b_hrs_ldc22 as bigint)) AS SUM_b_hrs_ldc22
+                    ,SUM(CAST(fmf.SUM_w_hrs_ldc22 as bigint)) AS SUM_w_hrs_ldc22
+                    ,SUM(CAST(fmf.SUM_w_hrs_car_ot as bigint)) AS SUM_w_hrs_car_ot
+                    ,SUM(CAST(fmf.SUM_w_hrs_car_tot as bigint)) AS SUM_w_hrs_car_tot
+                    ,SUM(CAST(fmf.SUM_w_sply_dels as bigint)) AS SUM_w_sply_dels
+                    ,SUM(CAST(fmf.SUM_w_cty_cupd as bigint)) AS SUM_w_cty_cupd
+                    ,SUM(CAST(fmf.SUM_w_sply_hrs as bigint)) AS SUM_w_sply_hrs
+                    ,SUM(CAST(fmf.SUM_w_hrs_ldc22sply as bigint)) AS SUM_w_hrs_ldc22sply
+                    ,SUM(CAST(fmf.SUM_w_carr_22 as bigint)) AS SUM_w_carr_22
+                    ,SUM(CAST(fmf.SUM_w_carr_1700 as bigint)) AS SUM_w_carr_1700
+                    ,SUM(CAST(fmf.SUM_fsh_sb2b_cura as bigint)) AS SUM_fsh_sb2b_cura
+                    ,SUM(CAST(fmf.SUM_fsh_cupd_cura as bigint)) AS SUM_fsh_cupd_cura
+                    ,SUM(CAST(fmf.SumRteDaysCur as bigint)) AS SumRteDaysCur
+                    ,SUM(CAST(fmf.SumRteDaysSply as bigint)) AS SumRteDaysSply
+                    ,SUM(CAST(fmf.SUM_w_vol_pkcc as bigint)) AS SUM_w_vol_pkcc
+                    ,SUM(CAST(fmf.SUM_w_vol_pkcc_sply as bigint)) AS SUM_w_vol_pkcc_sply
+                    --end of never changes due to scope   
+
+                --currently does not change by scope
+                FROM pcdv_dw.dbo.var_office_level ol
+                    LEFT JOIN pcdv_dw.dbo.f2b_matrix_fin_nbr fmf
+                              ON ol.ol_lead_fin_nbr = fmf.b_lead_fin_nbr
+                    WHERE ol.ol_level = '24'
+                    AND fmf.b_lead_fin_nbr is not null
+                --changes by scope
+                GROUP BY
+                     fmf.b_area
+                    ,fmf.b_area_name
+                    ,fmf.b_cluster
+                    ,fmf.b_cluster_Name
+                    ,fmf.b_mpoo
+                    ,fmf.b_lead_fin_nbr
+                    ,fmf.b_lead_name
+
+                    ,fmf.w_fywk;                   
+ 
+
+			--***********************************************************************                  
+				--update for f2b_matrix_lvl26
+
+            TRUNCATE TABLE  PCDV_DW.dbo.f2b_matrix_lvl26
+
+            Insert INTO PCDV_DW.dbo.f2b_matrix_lvl26
+
+                SELECT
+
+                     fmf.b_area
+                    ,fmf.b_area_name
+                    ,fmf.b_cluster
+                    ,fmf.b_cluster_Name
+                    ,fmf.b_mpoo
+                    ,fmf.b_lead_fin_nbr
+                    ,fmf.b_lead_name
+
+                    ,fmf.w_fywk
+
+
+                     --this part never changes due to scope
+                    ,SUM(CAST(fmf.SumPlan2BComp01 as bigint)) AS SumPlan2BComp01
+                    ,SUM(CAST(fmf.SumPlan2BComp02 as bigint)) AS SumPlan2BComp02
+                    ,SUM(CAST(fmf.SumSply2BComp01 as bigint)) AS SumSply2BComp01
+                    ,SUM(CAST(fmf.SumLdc237Comp01 as bigint)) AS SumLdc237Comp01
+                    ,SUM(CAST(fmf.SumLdc237Comp02 as bigint)) AS SumLdc237Comp02
+                    ,SUM(CAST(fmf.SumDph2SplyComp01 as bigint)) AS SumDph2SplyComp01
+                    ,SUM(CAST(fmf.SumTotVolComp01 as bigint)) AS SumTotVolComp01
+                    ,SUM(CAST(fmf.SumTotVolComp02 as bigint)) AS SumTotVolComp02
+                    ,SUM(CAST(fmf.SumOei2SplyComp01 as bigint)) AS SumOei2SplyComp01
+                    ,SUM(CAST(fmf.SumOei2SplyComp02 as bigint)) AS SumOei2SplyComp02
+                    ,SUM(CAST(fmf.SUM_b_hrs_ldc22 as bigint)) AS SUM_b_hrs_ldc22
+                    ,SUM(CAST(fmf.SUM_w_hrs_ldc22 as bigint)) AS SUM_w_hrs_ldc22
+                    ,SUM(CAST(fmf.SUM_w_hrs_car_ot as bigint)) AS SUM_w_hrs_car_ot
+                    ,SUM(CAST(fmf.SUM_w_hrs_car_tot as bigint)) AS SUM_w_hrs_car_tot
+                    ,SUM(CAST(fmf.SUM_w_sply_dels as bigint)) AS SUM_w_sply_dels
+                    ,SUM(CAST(fmf.SUM_w_cty_cupd as bigint)) AS SUM_w_cty_cupd
+                    ,SUM(CAST(fmf.SUM_w_sply_hrs as bigint)) AS SUM_w_sply_hrs
+                    ,SUM(CAST(fmf.SUM_w_hrs_ldc22sply as bigint)) AS SUM_w_hrs_ldc22sply
+                    ,SUM(CAST(fmf.SUM_w_carr_22 as bigint)) AS SUM_w_carr_22
+                    ,SUM(CAST(fmf.SUM_w_carr_1700 as bigint)) AS SUM_w_carr_1700
+                    ,SUM(CAST(fmf.SUM_fsh_sb2b_cura as bigint)) AS SUM_fsh_sb2b_cura
+                    ,SUM(CAST(fmf.SUM_fsh_cupd_cura as bigint)) AS SUM_fsh_cupd_cura
+                    ,SUM(CAST(fmf.SumRteDaysCur as bigint)) AS SumRteDaysCur
+                    ,SUM(CAST(fmf.SumRteDaysSply as bigint)) AS SumRteDaysSply
+                    ,SUM(CAST(fmf.SUM_w_vol_pkcc as bigint)) AS SUM_w_vol_pkcc
+                    ,SUM(CAST(fmf.SUM_w_vol_pkcc_sply as bigint)) AS SUM_w_vol_pkcc_sply
+                    --end of never changes due to scope   
+                                        
+                --currently does not change by scope
+                FROM pcdv_dw.dbo.var_office_level ol
+                    LEFT JOIN pcdv_dw.dbo.f2b_matrix_fin_nbr fmf
+                              ON ol.ol_lead_fin_nbr = fmf.b_lead_fin_nbr
+                    WHERE ol.ol_level = '26'
+                    AND fmf.b_lead_fin_nbr is not null
+                    
+                --changes by scope
+                GROUP BY
+                     fmf.b_area
+                    ,fmf.b_area_name
+                    ,fmf.b_cluster
+                    ,fmf.b_cluster_Name
+                    ,fmf.b_mpoo
+                    ,fmf.b_lead_fin_nbr
+                    ,fmf.b_lead_name
+
+                    ,fmf.w_fywk;             
+					
+			--***********************************************************************                  
+				--update for f2b_matrix_pces
+
+            TRUNCATE TABLE  PCDV_DW.dbo.f2b_matrix_pces
+
+            Insert INTO PCDV_DW.dbo.f2b_matrix_pces
+
+                SELECT
+
+                     fmf.b_area
+                    ,fmf.b_area_name
+                    ,fmf.b_cluster
+                    ,fmf.b_cluster_Name
+                    ,fmf.b_mpoo
+                    ,fmf.b_lead_fin_nbr
+                    ,fmf.b_lead_name
+
+                    ,fmf.w_fywk
+
+                     --this part never changes due to scope
+                    ,SUM(CAST(fmf.SumPlan2BComp01 as bigint)) AS SumPlan2BComp01
+                    ,SUM(CAST(fmf.SumPlan2BComp02 as bigint)) AS SumPlan2BComp02
+                    ,SUM(CAST(fmf.SumSply2BComp01 as bigint)) AS SumSply2BComp01
+                    ,SUM(CAST(fmf.SumLdc237Comp01 as bigint)) AS SumLdc237Comp01
+                    ,SUM(CAST(fmf.SumLdc237Comp02 as bigint)) AS SumLdc237Comp02
+                    ,SUM(CAST(fmf.SumDph2SplyComp01 as bigint)) AS SumDph2SplyComp01
+                    ,SUM(CAST(fmf.SumTotVolComp01 as bigint)) AS SumTotVolComp01
+                    ,SUM(CAST(fmf.SumTotVolComp02 as bigint)) AS SumTotVolComp02
+                    ,SUM(CAST(fmf.SumOei2SplyComp01 as bigint)) AS SumOei2SplyComp01
+                    ,SUM(CAST(fmf.SumOei2SplyComp02 as bigint)) AS SumOei2SplyComp02
+                    ,SUM(CAST(fmf.SUM_b_hrs_ldc22 as bigint)) AS SUM_b_hrs_ldc22
+                    ,SUM(CAST(fmf.SUM_w_hrs_ldc22 as bigint)) AS SUM_w_hrs_ldc22
+                    ,SUM(CAST(fmf.SUM_w_hrs_car_ot as bigint)) AS SUM_w_hrs_car_ot
+                    ,SUM(CAST(fmf.SUM_w_hrs_car_tot as bigint)) AS SUM_w_hrs_car_tot
+                    ,SUM(CAST(fmf.SUM_w_sply_dels as bigint)) AS SUM_w_sply_dels
+                    ,SUM(CAST(fmf.SUM_w_cty_cupd as bigint)) AS SUM_w_cty_cupd
+                    ,SUM(CAST(fmf.SUM_w_sply_hrs as bigint)) AS SUM_w_sply_hrs
+                    ,SUM(CAST(fmf.SUM_w_hrs_ldc22sply as bigint)) AS SUM_w_hrs_ldc22sply
+                    ,SUM(CAST(fmf.SUM_w_carr_22 as bigint)) AS SUM_w_carr_22
+                    ,SUM(CAST(fmf.SUM_w_carr_1700 as bigint)) AS SUM_w_carr_1700
+                    ,SUM(CAST(fmf.SUM_fsh_sb2b_cura as bigint)) AS SUM_fsh_sb2b_cura
+                    ,SUM(CAST(fmf.SUM_fsh_cupd_cura as bigint)) AS SUM_fsh_cupd_cura
+                    ,SUM(CAST(fmf.SumRteDaysCur as bigint)) AS SumRteDaysCur
+                    ,SUM(CAST(fmf.SumRteDaysSply as bigint)) AS SumRteDaysSply
+                    ,SUM(CAST(fmf.SUM_w_vol_pkcc as bigint)) AS SUM_w_vol_pkcc
+                    ,SUM(CAST(fmf.SUM_w_vol_pkcc_sply as bigint)) AS SUM_w_vol_pkcc_sply
+                    --end of never changes due to scope   
+                    
+                --currently does not change by scope
+                FROM pcdv_dw.dbo.var_office_level ol
+                    LEFT JOIN pcdv_dw.dbo.f2b_matrix_fin_nbr fmf
+                              ON ol.ol_lead_fin_nbr = fmf.b_lead_fin_nbr
+                    WHERE ol.ol_level = 'PC'
+                    AND fmf.b_lead_fin_nbr is not null
+                --changes by scope
+                GROUP BY
+                     fmf.b_area
+                    ,fmf.b_area_name
+                    ,fmf.b_cluster
+                    ,fmf.b_cluster_Name
+                    ,fmf.b_mpoo
+                    ,fmf.b_lead_fin_nbr
+                    ,fmf.b_lead_name
+
+                    ,fmf.w_fywk;
+                    
+			--***********************************************************************                  
+				--update for f2b_matrix_mpoos
+
+            TRUNCATE TABLE  PCDV_DW.dbo.f2b_matrix_mpoos
+
+            Insert INTO PCDV_DW.dbo.f2b_matrix_mpoos
+
+                SELECT
+
+                     fmf.b_area
+                    ,fmf.b_area_name
+                    ,fmf.b_cluster
+                    ,fmf.b_cluster_Name
+                    ,fmf.b_mpoo
+
+                    ,fmf.w_fywk
+
+                     --this part never changes due to scope
+                    ,SUM(CAST(fmf.SumPlan2BComp01 as bigint)) AS SumPlan2BComp01
+                    ,SUM(CAST(fmf.SumPlan2BComp02 as bigint)) AS SumPlan2BComp02
+                    ,SUM(CAST(fmf.SumSply2BComp01 as bigint)) AS SumSply2BComp01
+                    ,SUM(CAST(fmf.SumLdc237Comp01 as bigint)) AS SumLdc237Comp01
+                    ,SUM(CAST(fmf.SumLdc237Comp02 as bigint)) AS SumLdc237Comp02
+                    ,SUM(CAST(fmf.SumDph2SplyComp01 as bigint)) AS SumDph2SplyComp01
+                    ,SUM(CAST(fmf.SumTotVolComp01 as bigint)) AS SumTotVolComp01
+                    ,SUM(CAST(fmf.SumTotVolComp02 as bigint)) AS SumTotVolComp02
+                    ,SUM(CAST(fmf.SumOei2SplyComp01 as bigint)) AS SumOei2SplyComp01
+                    ,SUM(CAST(fmf.SumOei2SplyComp02 as bigint)) AS SumOei2SplyComp02
+                    ,SUM(CAST(fmf.SUM_b_hrs_ldc22 as bigint)) AS SUM_b_hrs_ldc22
+                    ,SUM(CAST(fmf.SUM_w_hrs_ldc22 as bigint)) AS SUM_w_hrs_ldc22
+                    ,SUM(CAST(fmf.SUM_w_hrs_car_ot as bigint)) AS SUM_w_hrs_car_ot
+                    ,SUM(CAST(fmf.SUM_w_hrs_car_tot as bigint)) AS SUM_w_hrs_car_tot
+                    ,SUM(CAST(fmf.SUM_w_sply_dels as bigint)) AS SUM_w_sply_dels
+                    ,SUM(CAST(fmf.SUM_w_cty_cupd as bigint)) AS SUM_w_cty_cupd
+                    ,SUM(CAST(fmf.SUM_w_sply_hrs as bigint)) AS SUM_w_sply_hrs
+                    ,SUM(CAST(fmf.SUM_w_hrs_ldc22sply as bigint)) AS SUM_w_hrs_ldc22sply
+                    ,SUM(CAST(fmf.SUM_w_carr_22 as bigint)) AS SUM_w_carr_22
+                    ,SUM(CAST(fmf.SUM_w_carr_1700 as bigint)) AS SUM_w_carr_1700
+                    ,SUM(CAST(fmf.SUM_fsh_sb2b_cura as bigint)) AS SUM_fsh_sb2b_cura
+                    ,SUM(CAST(fmf.SUM_fsh_cupd_cura as bigint)) AS SUM_fsh_cupd_cura
+                    ,SUM(CAST(fmf.SumRteDaysCur as bigint)) AS SumRteDaysCur
+                    ,SUM(CAST(fmf.SumRteDaysSply as bigint)) AS SumRteDaysSply
+                    ,SUM(CAST(fmf.SUM_w_vol_pkcc as bigint)) AS SUM_w_vol_pkcc
+                    ,SUM(CAST(fmf.SUM_w_vol_pkcc_sply as bigint)) AS SUM_w_vol_pkcc_sply
+                    --end of never changes due to scope   
+                    
+                --currently does not change by scope
+                FROM pcdv_dw.dbo.f2b_matrix_fin_nbr fmf
+
+                --changes by scope
+                GROUP BY
+                     fmf.b_area
+                    ,fmf.b_area_name
+                    ,fmf.b_cluster
+                    ,fmf.b_cluster_Name
+                    ,fmf.b_mpoo
+
+                    ,fmf.w_fywk;
+                    
+
+			--***********************************************************************                  
+				--update for f2b_matrix_clusters
+
+            TRUNCATE TABLE  PCDV_DW.dbo.f2b_matrix_clusters
+
+            Insert INTO PCDV_DW.dbo.f2b_matrix_clusters
+
+                SELECT
+
+                     fmf.b_area
+                    ,fmf.b_area_name
+                    ,fmf.b_cluster
+                    ,fmf.b_cluster_Name
+
+                    ,fmf.w_fywk
+
+                     --this part never changes due to scope
+                    ,SUM(CAST(fmf.SumPlan2BComp01 as bigint)) AS SumPlan2BComp01
+                    ,SUM(CAST(fmf.SumPlan2BComp02 as bigint)) AS SumPlan2BComp02
+                    ,SUM(CAST(fmf.SumSply2BComp01 as bigint)) AS SumSply2BComp01
+                    ,SUM(CAST(fmf.SumLdc237Comp01 as bigint)) AS SumLdc237Comp01
+                    ,SUM(CAST(fmf.SumLdc237Comp02 as bigint)) AS SumLdc237Comp02
+                    ,SUM(CAST(fmf.SumDph2SplyComp01 as bigint)) AS SumDph2SplyComp01
+                    ,SUM(CAST(fmf.SumTotVolComp01 as bigint)) AS SumTotVolComp01
+                    ,SUM(CAST(fmf.SumTotVolComp02 as bigint)) AS SumTotVolComp02
+                    ,SUM(CAST(fmf.SumOei2SplyComp01 as bigint)) AS SumOei2SplyComp01
+                    ,SUM(CAST(fmf.SumOei2SplyComp02 as bigint)) AS SumOei2SplyComp02
+                    ,SUM(CAST(fmf.SUM_b_hrs_ldc22 as bigint)) AS SUM_b_hrs_ldc22
+                    ,SUM(CAST(fmf.SUM_w_hrs_ldc22 as bigint)) AS SUM_w_hrs_ldc22
+                    ,SUM(CAST(fmf.SUM_w_hrs_car_ot as bigint)) AS SUM_w_hrs_car_ot
+                    ,SUM(CAST(fmf.SUM_w_hrs_car_tot as bigint)) AS SUM_w_hrs_car_tot
+                    ,SUM(CAST(fmf.SUM_w_sply_dels as bigint)) AS SUM_w_sply_dels
+                    ,SUM(CAST(fmf.SUM_w_cty_cupd as bigint)) AS SUM_w_cty_cupd
+                    ,SUM(CAST(fmf.SUM_w_sply_hrs as bigint)) AS SUM_w_sply_hrs
+                    ,SUM(CAST(fmf.SUM_w_hrs_ldc22sply as bigint)) AS SUM_w_hrs_ldc22sply
+                    ,SUM(CAST(fmf.SUM_w_carr_22 as bigint)) AS SUM_w_carr_22
+                    ,SUM(CAST(fmf.SUM_w_carr_1700 as bigint)) AS SUM_w_carr_1700
+                    ,SUM(CAST(fmf.SUM_fsh_sb2b_cura as bigint)) AS SUM_fsh_sb2b_cura
+                    ,SUM(CAST(fmf.SUM_fsh_cupd_cura as bigint)) AS SUM_fsh_cupd_cura
+                    ,SUM(CAST(fmf.SumRteDaysCur as bigint)) AS SumRteDaysCur
+                    ,SUM(CAST(fmf.SumRteDaysSply as bigint)) AS SumRteDaysSply
+                    ,SUM(CAST(fmf.SUM_w_vol_pkcc as bigint)) AS SUM_w_vol_pkcc
+                    ,SUM(CAST(fmf.SUM_w_vol_pkcc_sply as bigint)) AS SUM_w_vol_pkcc_sply
+                    --end of never changes due to scope 
+                      
+                FROM pcdv_dw.dbo.f2b_matrix_fin_nbr fmf
+
+                --changes by scope
+                GROUP BY
+                     fmf.b_area
+                    ,fmf.b_area_name
+                    ,fmf.b_cluster
+                    ,fmf.b_cluster_Name
+
+                    ,fmf.w_fywk;
+
+                   
+			--***********************************************************************                  
+				--update for f2b_matrix_majormetros
+				--subset of f2b_matrix_clusters
+
+          TRUNCATE TABLE  PCDV_DW.dbo.f2b_matrix_majormetros
+
+            Insert INTO PCDV_DW.dbo.f2b_matrix_majormetros
+
+                SELECT
+
+                     fmc.b_area
+                    ,fmc.b_area_name
+                    ,fmc.b_cluster
+                    ,fmc.b_cluster_Name
+
+                    ,fmc.w_fywk
+
+                     --this part never changes due to scope
+                     --ok, i lied, this one changes :P
+                    ,fmc.SumPlan2BComp01
+                    ,fmc.SumPlan2BComp02
+                    ,fmc.SumSply2BComp01
+                    ,fmc.SumLdc237Comp01
+                    ,fmc.SumLdc237Comp02
+                    ,fmc.SumDph2SplyComp01
+                    ,fmc.SumTotVolComp01
+                    ,fmc.SumTotVolComp02
+                    ,fmc.SumOei2SplyComp01
+                    ,fmc.SumOei2SplyComp02
+                    ,fmc.SUM_b_hrs_ldc22
+                    ,fmc.SUM_w_hrs_ldc22
+                    ,fmc.SUM_w_hrs_car_ot
+                    ,fmc.SUM_w_hrs_car_tot
+                    ,fmc.SUM_w_sply_dels
+                    ,fmc.SUM_w_cty_cupd
+                    ,fmc.SUM_w_sply_hrs
+                    ,fmc.SUM_w_hrs_ldc22sply
+                    ,fmc.SUM_w_carr_22
+                    ,fmc.SUM_w_carr_1700
+                    ,fmc.SUM_fsh_sb2b_cura
+                    ,fmc.SUM_fsh_cupd_cura
+                    ,fmc.SumRteDaysCur
+                    ,fmc.SumRteDaysSply
+                    ,fmc.SUM_w_vol_pkcc
+                    ,fmc.SUM_w_vol_pkcc_sply
+                    --end of never changes due to scope
+                
+                --currently does not change by scope
+                FROM pcdv_dw.dbo.f2b_majorMetros mm
+                     LEFT JOIN
+                     pcdv_dw.dbo.f2b_matrix_clusters fmc
+                     ON mm.b_cluster = fmc.b_cluster
+                WHERE fmc.b_cluster is not null;
+
+			--***********************************************************************                  
+			--***********************************************************************                  
+				--update for f2b_matrix_areas
+
+            TRUNCATE TABLE  PCDV_DW.dbo.f2b_matrix_areas
+
+            Insert INTO PCDV_DW.dbo.f2b_matrix_areas
+
+                SELECT
+
+                     fmf.b_area
+                    ,fmf.b_area_name
+
+                    ,fmf.w_fywk
+
+                     --this part never changes due to scope
+                    ,SUM(CAST(fmf.SumPlan2BComp01 as bigint)) AS SumPlan2BComp01
+                    ,SUM(CAST(fmf.SumPlan2BComp02 as bigint)) AS SumPlan2BComp02
+                    ,SUM(CAST(fmf.SumSply2BComp01 as bigint)) AS SumSply2BComp01
+                    ,SUM(CAST(fmf.SumLdc237Comp01 as bigint)) AS SumLdc237Comp01
+                    ,SUM(CAST(fmf.SumLdc237Comp02 as bigint)) AS SumLdc237Comp02
+                    ,SUM(CAST(fmf.SumDph2SplyComp01 as bigint)) AS SumDph2SplyComp01
+                    ,SUM(CAST(fmf.SumTotVolComp01 as bigint)) AS SumTotVolComp01
+                    ,SUM(CAST(fmf.SumTotVolComp02 as bigint)) AS SumTotVolComp02
+                    ,SUM(CAST(fmf.SumOei2SplyComp01 as bigint)) AS SumOei2SplyComp01
+                    ,SUM(CAST(fmf.SumOei2SplyComp02 as bigint)) AS SumOei2SplyComp02
+                    ,SUM(CAST(fmf.SUM_b_hrs_ldc22 as bigint)) AS SUM_b_hrs_ldc22
+                    ,SUM(CAST(fmf.SUM_w_hrs_ldc22 as bigint)) AS SUM_w_hrs_ldc22
+                    ,SUM(CAST(fmf.SUM_w_hrs_car_ot as bigint)) AS SUM_w_hrs_car_ot
+                    ,SUM(CAST(fmf.SUM_w_hrs_car_tot as bigint)) AS SUM_w_hrs_car_tot
+                    ,SUM(CAST(fmf.SUM_w_sply_dels as bigint)) AS SUM_w_sply_dels
+                    ,SUM(CAST(fmf.SUM_w_cty_cupd as bigint)) AS SUM_w_cty_cupd
+                    ,SUM(CAST(fmf.SUM_w_sply_hrs as bigint)) AS SUM_w_sply_hrs
+                    ,SUM(CAST(fmf.SUM_w_hrs_ldc22sply as bigint)) AS SUM_w_hrs_ldc22sply
+                    ,SUM(CAST(fmf.SUM_w_carr_22 as bigint)) AS SUM_w_carr_22
+                    ,SUM(CAST(fmf.SUM_w_carr_1700 as bigint)) AS SUM_w_carr_1700
+                    ,SUM(CAST(fmf.SUM_fsh_sb2b_cura as bigint)) AS SUM_fsh_sb2b_cura
+                    ,SUM(CAST(fmf.SUM_fsh_cupd_cura as bigint)) AS SUM_fsh_cupd_cura
+                    ,SUM(CAST(fmf.SumRteDaysCur as bigint)) AS SumRteDaysCur
+                    ,SUM(CAST(fmf.SumRteDaysSply as bigint)) AS SumRteDaysSply
+                    ,SUM(CAST(fmf.SUM_w_vol_pkcc as bigint)) AS SUM_w_vol_pkcc
+                    ,SUM(CAST(fmf.SUM_w_vol_pkcc_sply as bigint)) AS SUM_w_vol_pkcc_sply
+                    --end of never changes due to scope
+                       
+                --currently does not change by scope
+                FROM pcdv_dw.dbo.f2b_matrix_fin_nbr fmf
+
+                --changes by scope
+                GROUP BY
+                     fmf.b_area
+                    ,fmf.b_area_name
+
+                    ,fmf.w_fywk;
+
+			--***********************************************************************                  
+			--***********************************************************************                  
+				--update for f2b_matrix_national
+
+            TRUNCATE TABLE  PCDV_DW.dbo.f2b_matrix_national
+
+            --Select * INTO PCDV_DW.dbo.f2b_matrix_national FROM
+            Insert INTO PCDV_DW.dbo.f2b_matrix_national
+
+                SELECT
+
+                     fmf.w_fywk
+
+                     --this part never changes due to scope
+                    ,SUM(CAST(fmf.SumPlan2BComp01 as bigint)) AS SumPlan2BComp01
+                    ,SUM(CAST(fmf.SumPlan2BComp02 as bigint)) AS SumPlan2BComp02
+                    ,SUM(CAST(fmf.SumSply2BComp01 as bigint)) AS SumSply2BComp01
+                    ,SUM(CAST(fmf.SumLdc237Comp01 as bigint)) AS SumLdc237Comp01
+                    ,SUM(CAST(fmf.SumLdc237Comp02 as bigint)) AS SumLdc237Comp02
+                    ,SUM(CAST(fmf.SumDph2SplyComp01 as bigint)) AS SumDph2SplyComp01
+                    ,SUM(CAST(fmf.SumTotVolComp01 as bigint)) AS SumTotVolComp01
+                    ,SUM(CAST(fmf.SumTotVolComp02 as bigint)) AS SumTotVolComp02
+                    ,SUM(CAST(fmf.SumOei2SplyComp01 as bigint)) AS SumOei2SplyComp01
+                    ,SUM(CAST(fmf.SumOei2SplyComp02 as bigint)) AS SumOei2SplyComp02
+                    ,SUM(CAST(fmf.SUM_b_hrs_ldc22 as bigint)) AS SUM_b_hrs_ldc22
+                    ,SUM(CAST(fmf.SUM_w_hrs_ldc22 as bigint)) AS SUM_w_hrs_ldc22
+                    ,SUM(CAST(fmf.SUM_w_hrs_car_ot as bigint)) AS SUM_w_hrs_car_ot
+                    ,SUM(CAST(fmf.SUM_w_hrs_car_tot as bigint)) AS SUM_w_hrs_car_tot
+                    ,SUM(CAST(fmf.SUM_w_sply_dels as bigint)) AS SUM_w_sply_dels
+                    ,SUM(CAST(fmf.SUM_w_cty_cupd as bigint)) AS SUM_w_cty_cupd
+                    ,SUM(CAST(fmf.SUM_w_sply_hrs as bigint)) AS SUM_w_sply_hrs
+                    ,SUM(CAST(fmf.SUM_w_hrs_ldc22sply as bigint)) AS SUM_w_hrs_ldc22sply
+                    ,SUM(CAST(fmf.SUM_w_carr_22 as bigint)) AS SUM_w_carr_22
+                    ,SUM(CAST(fmf.SUM_w_carr_1700 as bigint)) AS SUM_w_carr_1700
+                    ,SUM(CAST(fmf.SUM_fsh_sb2b_cura as bigint)) AS SUM_fsh_sb2b_cura
+                    ,SUM(CAST(fmf.SUM_fsh_cupd_cura as bigint)) AS SUM_fsh_cupd_cura
+                    ,SUM(CAST(fmf.SumRteDaysCur as bigint)) AS SumRteDaysCur
+                    ,SUM(CAST(fmf.SumRteDaysSply as bigint)) AS SumRteDaysSply
+                    ,SUM(CAST(fmf.SUM_w_vol_pkcc as bigint)) AS SUM_w_vol_pkcc
+                    ,SUM(CAST(fmf.SUM_w_vol_pkcc_sply as bigint)) AS SUM_w_vol_pkcc_sply
+                    --end of never changes due to scope   
+                    
+                --currently does not change by scope
+                FROM pcdv_dw.dbo.f2b_matrix_fin_nbr fmf
+
+                --changes by scope
+                GROUP BY
+                    fmf.w_fywk;
+
+    --2022-12-09 wildgk. Use new lock/unlock mechanism.
+    exec var_servers.dbo.usp_application_lock_unlock
+         @entityIdentifier = 'F2B LEAN MATRIX'
+        ,@lockInd = 0
+        ,@groupLockUnlockInd = 1;
+	
+	EXEC PCDV_Delpvar.dbo.sp_cdv_leadFin_calc2010
+    
+    -- mv fsh files
+	EXEC master..xp_CMDShell 'E:\DATA\eFlash\fmv.bat' 
+END

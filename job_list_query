@@ -1,0 +1,13 @@
+SELECT  
+    j.name AS JobName,
+    s.step_id,
+    s.step_name,
+    s.subsystem,
+    s.command
+FROM dbo.sysjobs j
+JOIN dbo.sysjobsteps s
+    ON j.job_id = s.job_id
+WHERE s.command LIKE '%YourStoredProcedureName%'
+ORDER BY j.name, s.step_id;
+USE msdb;
+GO

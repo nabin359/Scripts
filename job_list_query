@@ -1,3 +1,5 @@
+jobs related or calls the stored procedure
+
 SELECT  
     j.name AS JobName,
     s.step_id,
@@ -11,3 +13,18 @@ WHERE s.command LIKE '%YourStoredProcedureName%'
 ORDER BY j.name, s.step_id;
 USE msdb;
 GO
+
+
+
+Dependency check
+
+SELECT  
+    OBJECT_SCHEMA_NAME(d.referencing_id) AS SchemaName,
+    OBJECT_NAME(d.referencing_id) AS ObjectName,
+    o.type_desc,
+	    d.referenced_entity_name AS entityReferenced
+
+FROM sys.sql_expression_dependencies d
+JOIN sys.objects o
+    ON d.referencing_id = o.object_id
+
